@@ -1,6 +1,6 @@
 # Bifrost dashboard
 
-An app launcher with a black background, responsive icon grid, and local search. TypeScript and Vite build the frontend. A small Node server stores apps and groups in SQLite and exposes a JSON API.
+An app launcher with a black background, grouped responsive icon grid, local search, and a Manage panel for editing it. TypeScript and Vite build the frontend. A small Node server stores apps and groups in SQLite and exposes a JSON API.
 
 ## Development
 
@@ -14,29 +14,15 @@ npm run dev
 
 The checked-in `sample/` contains illustrative `example.test` URLs and local demo icons. The first start imports `data/apps.json` into SQLite. Later starts never import it again, even after every app is deleted.
 
-Vite serves the same API and data icons as the production server. Use `BIFROST_DATA_DIR` to select another data directory. The current launcher still fetches the catalog source described below; its API integration is separate. Nothing in the dashboard queries or changes the proxy.
+Vite serves the same API and data icons as the production server. Use `BIFROST_DATA_DIR` to select another data directory. The launcher reads and changes the catalog through this API. Nothing in the dashboard queries or changes the proxy.
 
-## Catalog contract
+## Launcher and Manage panel
 
-```json
-{
-  "apps": [
-    {
-      "name": "Immich",
-      "url": "https://photos.example.com",
-      "icon": "icons/immich.v1.svg"
-    }
-  ]
-}
-```
+The launcher fetches `api/catalog` on each page load, with cache revalidation and a ten-second timeout, and validates the whole response before showing it. It shows each nonempty group as a section in the order you set, then ungrouped apps under "Ungrouped". With no groups, one "All apps" section lists everything. Search matches app names and domains across groups and hides groups without matches. Apps open in new tabs. An empty catalog shows an empty state; an invalid or unavailable response shows a retry action. There is no background polling.
 
-- `name`: required, nonempty display name.
-- `url`: required, absolute HTTP(S) URL without embedded credentials. Paths and ports are supported. The host is displayed below the app name.
-- `icon`: optional URL or path on the same origin as the catalog. Relative paths resolve beside the catalog. SVG, PNG, and other browser-supported image formats work. Missing or broken images fall back to initials. SVG files are displayed as images, never inserted as markup.
+Icon paths from the API are relative to the dashboard root and resolve against the page's base URL, so they work under a `--base` prefix. Missing or broken images fall back to initials. Icons are shown as images, never inserted as markup, and all API text is rendered as plain text.
 
-The catalog is fetched at runtime on each page load, with cache revalidation and a ten-second timeout. It is never imported into the JavaScript bundle. Apps are sorted alphabetically, searched by name or domain, and opened in new tabs. An empty array displays an empty state; an invalid catalog or unavailable file displays a retry action. There is no background polling.
-
-The default source is `./apps.json`. Change the `apps-source` meta tag in `index.html` to configure its URL. Keep catalog and icon serving on the dashboard's origin. For a deployment under a URL prefix, use Vite's `--base` option and relative icon paths.
+**Manage** opens a side panel (a full-screen sheet on phones) with the same groups and apps as a tree. Drag the handles to reorder groups, reorder apps, or move an app to another group, including an empty one; the tree and launcher update from the server's response. A rejected change, such as a conflict with an edit made elsewhere, reloads the catalog and shows a message. Each group has Rename, Move up, Move down, and Delete (its apps become ungrouped). Selecting an app opens a form to change its name, URL, group, and icon, to move it up or down without dragging, or to remove it. **+ App** and **+ Group** create new ones. Every change is saved immediately. The API behind the panel is documented in [docs/api.md](docs/api.md).
 
 ## Data and automation
 
@@ -106,7 +92,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-Linux browser checks also need Chromium's system libraries; on a development or CI machine that permits package installation, `npx playwright install --with-deps chromium` installs them. Browser tests cover the current JSON-file frontend. They do not verify the new management API.
+Linux browser checks also need Chromium's system libraries; on a development or CI machine that permits package installation, `npx playwright install --with-deps chromium` installs them. `npm run test:browser` builds the frontend first. Each browser test starts its own dashboard server on a random port with a fresh temporary database, so tests are isolated and run in parallel. They cover the grouped launcher, search, load failures, and the Manage panel (adding, editing, icons, dragging, keyboard reordering, deletion, the phone sheet, and conflict recovery) in desktop and phone projects.
 
 `npm run check` runs the unit tests, TypeScript checks, and Vite build. Unit tests cover one-time import, ordering, atomic layouts, JSON validation, icon uploads and cleanup, file routing, cache headers, path protections, and occupied ports. Validate unit syntax with `systemd-analyze verify deploy/bifrost-dashboard.service`.
 
