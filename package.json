@@ -12,18 +12,20 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "node --test tests/catalog.test.ts tests/store.test.ts tests/api.test.ts tests/server.test.ts",
-    "test:browser": "playwright test",
+    "test:browser": "npm run build && playwright test",
     "check": "npm test && npm run build"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/node": "^22.20.3",
     "@types/serve-static": "^2.2.0",
+    "@types/sortablejs": "^1.15.9",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
   },
   "dependencies": {
-    "serve-static": "^2.2.1"
+    "serve-static": "^2.2.1",
+    "sortablejs": "^1.15.7"
   },
   "license": "MIT"
 }

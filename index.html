@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#000000">
     <meta name="description" content="Your apps, in one place.">
-    <meta name="apps-source" content="./apps.json">
+    <meta name="apps-source" content="./api/catalog">
     <link rel="icon" type="image/svg+xml" href="/src/brand.svg">
     <title>Bifrost</title>
   </head>
@@ -21,6 +21,7 @@
         <div class="header-detail">
           <span class="tagline">Your corner of the internet</span>
           <span class="header-count" id="total-count"></span>
+          <button class="manage-button" id="manage-open" type="button" disabled>Manage</button>
         </div>
       </header>
 
@@ -34,24 +35,21 @@
           </label>
         </div>
 
-        <section aria-labelledby="apps-heading" id="apps-section" aria-busy="true">
-          <div class="section-line">
-            <h2 id="apps-heading">All apps <span id="result-count"></span></h2>
-            <span class="sort-order" aria-label="Sorted alphabetically">A → Z</span>
-          </div>
+        <div id="apps-section" aria-busy="true">
           <p class="visually-hidden" id="search-announcement" role="status"></p>
-          <ul class="app-grid" id="app-grid"></ul>
+          <div id="launcher"></div>
           <div class="message" id="message" role="status">
             <p id="message-title">Loading apps…</p>
             <p class="message-detail" id="message-detail"></p>
             <button id="retry" type="button" hidden>Try again</button>
           </div>
-        </section>
+        </div>
         <noscript><p class="noscript-message">Enable JavaScript to load the app list.</p><style>#message { display: none; }</style></noscript>
       </main>
 
       <footer class="site-footer"><span>Bifrost proxy</span><span>Your apps, one place.</span></footer>
     </div>
+    <dialog class="manage" id="manage" aria-labelledby="manage-title"></dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
