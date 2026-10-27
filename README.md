@@ -16,6 +16,8 @@ The checked-in `sample/` contains illustrative `example.test` URLs and local dem
 
 Vite serves the same API and data icons as the production server. Use `BIFROST_DATA_DIR` to select another data directory. The launcher reads and changes the catalog through this API. Nothing in the dashboard queries or changes the proxy.
 
+Relative data directories resolve from the application root, even with a different Vite root. Vite denies direct file access to the data directory and `sample/`; use `/api/` for catalog data and `/icons/` for live icons.
+
 ## Launcher and Manage panel
 
 The launcher fetches `api/catalog` on each page load, with cache revalidation and a ten-second timeout, and validates the whole response before showing it. It shows each nonempty group as a section in the order you set, then ungrouped apps under "Ungrouped". With no groups, one "All apps" section lists everything. Search matches app names and domains across groups and hides groups without matches. Apps open in new tabs. An empty catalog shows an empty state; an invalid or unavailable response shows a retry action. There is no background polling.
@@ -80,7 +82,22 @@ systemctl status bifrost-dashboard.service
 journalctl -u bifrost-dashboard.service -n 50 --no-pager
 ```
 
-To migrate an existing deployment, stop the service, copy its old `apps.json` and `icons/` into `/var/lib/bifrost-dashboard`, and start the service. Update `dashboard.env` to use that data directory before starting. A fresh database imports the catalog once. Preserve an existing `bifrost.sqlite` to keep its state instead.
+To migrate an existing deployment:
+
+1. Stop the service with `sudo systemctl stop bifrost-dashboard.service`.
+2. Copy its old `apps.json` and `icons/` into `/var/lib/bifrost-dashboard`. Preserve an existing `bifrost.sqlite` to keep its state instead.
+3. Update `dashboard.env` to use that data directory.
+4. Install the updated unit and reload systemd before starting:
+
+```sh
+sudo install -m 0644 deploy/bifrost-dashboard.service /etc/systemd/system/bifrost-dashboard.service
+sudo systemctl daemon-reload
+sudo systemctl start bifrost-dashboard.service
+```
+
+The updated unit's `StateDirectory=bifrost-dashboard` makes persistent storage writable under `ProtectSystem=strict`. The old unit lacks that setting.
+
+A fresh database imports the legacy catalog once, accepting a leading UTF-8 BOM. An invalid `apps.json` stops startup until it is fixed or removed. The error names the file and invalid app number. No apps are imported on failure, so the corrected file can be imported on the next start.
 
 For later frontend releases, build the application and restart with `sudo systemctl restart bifrost-dashboard.service`. Preserve the environment file and the persistent data directory. Port or path changes in the environment file also require a restart. API updates do not. Stop and disable the service with `sudo systemctl disable --now bifrost-dashboard.service`.
 
