@@ -62,7 +62,8 @@ function localIcon(value: unknown, dataDir: string): string | null {
   } catch {
     return null;
   }
-  if (filename.startsWith('.') || /[/\\\0]/.test(filename)) return null;
+  // The stored path is used as a URL as-is, so only names that need no escaping are kept.
+  if (!/^[\w-][\w.-]*$/.test(filename)) return null;
   const path = `icons/${filename}`;
   return statSync(join(dataDir, path), { throwIfNoEntry: false })?.isFile() ? path : null;
 }
@@ -231,7 +232,8 @@ export function openStore(dataDir: string) {
 
   function uniqueGroupName(name: string, id?: number): string {
     const normalized = requireName(name, 60);
-    const folded = (value: string) => value.normalize('NFKC').toUpperCase().toLowerCase();
+    // Lowercasing first maps ẞ to ß, which uppercasing then expands like a full case fold.
+    const folded = (value: string) => value.normalize('NFKC').toLowerCase().toUpperCase().toLowerCase();
     if (catalog().groups.some(group => group.id !== id && folded(group.name) === folded(normalized))) {
       throw new StoreError(409, 'A group with that name already exists.');
     }

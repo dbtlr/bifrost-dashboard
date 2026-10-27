@@ -307,7 +307,7 @@ export function createManager(host: ManagerHost) {
   function groupForm(state: Extract<FormState, { kind: 'new-group' | 'rename-group' }>): HTMLFormElement {
     const group = state.kind === 'rename-group' ? findGroup(state.id) : undefined;
     if (draft.key !== formKey()) draft = { ...draftFor(formKey()), name: group?.name ?? '' };
-    const name = h('input', { name: 'name', type: 'text', required: true, maxlength: '60', autocomplete: 'off', value: draft.name });
+    const name = h('input', { name: 'name', type: 'text', required: true, autocomplete: 'off', value: draft.name });
     name.addEventListener('input', () => { draft.name = name.value; });
     const cancel = () => closeForm(group ? `[data-act="group-rename"][data-id="${group.id}"]` : '[data-act="new-group"]');
     const cancelButton = button('Cancel', { class: 'form-cancel' });
@@ -380,7 +380,7 @@ export function createManager(host: ManagerHost) {
     const app = state.kind === 'app' ? findApp(state.id) : undefined;
     if (draft.key !== formKey()) draft = draftFor(formKey(), app);
     else if (app) draft = rebaseDraft(draft, app);
-    const name = h('input', { name: 'name', type: 'text', required: true, maxlength: '100', autocomplete: 'off', value: draft.name });
+    const name = h('input', { name: 'name', type: 'text', required: true, autocomplete: 'off', value: draft.name });
     const url = h('input', { name: 'url', type: 'url', required: true, inputmode: 'url', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', placeholder: 'https://', value: draft.url });
     const group = h('select', { name: 'group' }, h('option', { value: '' }, 'Ungrouped'),
       ...host.getCatalog().groups.map(entry => h('option', { value: String(entry.id) }, entry.name)));

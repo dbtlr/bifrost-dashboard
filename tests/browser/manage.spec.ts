@@ -94,6 +94,22 @@ test('edits to an app and group save immediately and show errors inline', async 
   await expect(launcherHeadings(page)).toContainText(['Everyday · 1', 'Media · 2', 'Vault · 1']);
 });
 
+test('name fields accept as many characters as the server allows, counting emoji as one', async ({ page, api }) => {
+  await api.seed();
+  await openManage(page);
+  await manage(page).getByRole('button', { name: '+ Group' }).click();
+  await field(page, 'Name').focus();
+  await page.keyboard.insertText('😀'.repeat(60));
+  await manage(page).getByRole('button', { name: 'Save' }).click();
+  await expect.poll(async () => (await api.catalog()).groups.some(group => group.name === '😀'.repeat(60))).toBe(true);
+  await editApp(page, 'Vaultwarden');
+  await field(page, 'Name').fill('');
+  await field(page, 'Name').focus();
+  await page.keyboard.insertText('🚀'.repeat(100));
+  await manage(page).getByRole('button', { name: 'Save' }).click();
+  await expect.poll(async () => (await api.catalog()).groups.flatMap(group => group.apps).some(app => app.name === '🚀'.repeat(100))).toBe(true);
+});
+
 test('uploading and removing an icon updates the launcher', async ({ page, api }) => {
   await api.seed();
   await openManage(page);

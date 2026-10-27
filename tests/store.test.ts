@@ -123,7 +123,7 @@ test('a database created without legacy data never imports a file added on a lat
 test('group names use Unicode case folding on create and rename', async t => {
   const store = await fixture(t);
   const other = store.createGroup('Other');
-  for (const [name, equivalent] of [['STRASSE', 'straße'], ['ΟΔΟΣ', 'οδοσ'], ['Office', 'Ｏｆｆｉｃｅ']]) {
+  for (const [name, equivalent] of [['STRASSE', 'straße'], ['ΟΔΟΣ', 'οδοσ'], ['Office', 'Ｏｆｆｉｃｅ'], ['Maße', 'MAẞE']]) {
     const group = store.createGroup(name!);
     assert.throws(() => store.createGroup(equivalent!), { status: 409 });
     assert.throws(() => store.updateGroup(other.id, equivalent!), { status: 409 });
@@ -137,11 +137,14 @@ test('legacy icons resolve URL paths to existing files directly under icons', as
   await mkdir(join(dataDir, 'icons', 'nested'), { recursive: true });
   await writeFile(join(dataDir, 'icons', 'home.svg'), '<svg/>');
   await writeFile(join(dataDir, 'icons', 'nested', 'home.svg'), '<svg/>');
+  await writeFile(join(dataDir, 'icons', 'a#b.svg'), '<svg/>');
   const icons = [
     './icons/home.svg', 'icons//home.svg', '/icons/home.svg',
     'http://host/icons/home.svg', 'https://other.test/icons/home.svg',
     'icons/../bifrost.sqlite', 'icons/nested/home.svg', 'icons/missing.svg',
     'http://host/elsewhere/home.svg', 'icons/%2e%2e%2fbifrost.sqlite', 'http://[invalid',
+    // Stored paths are used as URLs, so names that need escaping could never load.
+    'icons/a%23b.svg',
   ];
   await writeFile(join(dataDir, 'apps.json'), JSON.stringify({ apps: icons.map((icon, index) => ({
     name: `App ${index + 1}`, url: 'https://app.test', icon,
@@ -150,7 +153,7 @@ test('legacy icons resolve URL paths to existing files directly under icons', as
   t.after(() => store.close());
   assert.deepEqual(store.catalog().ungrouped.map(app => app.icon), [
     'icons/home.svg', 'icons/home.svg', 'icons/home.svg', 'icons/home.svg', 'icons/home.svg',
-    null, null, null, null, null, null,
+    null, null, null, null, null, null, null,
   ]);
 });
 

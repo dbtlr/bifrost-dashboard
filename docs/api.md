@@ -74,7 +74,7 @@ Each `apps` array is also in display order.
 Failed requests return a JSON body with a readable message:
 
 ```json
-{ "error": "url must be an absolute http or https URL." }
+{ "error": "url must be an absolute http or https URL without credentials." }
 ```
 
 | Status | Meaning |
@@ -225,6 +225,6 @@ The server keeps its state in the data directory, set by `BIFROST_DATA_DIR`. Rel
 - `bifrost.sqlite`: the database. Opening a database from an earlier version upgrades its schema in place and keeps its data.
 - `icons/`: uploaded icons, served at `/icons/`.
 
-When the server creates a new database and the data directory contains a legacy `apps.json`, it imports those apps once, ungrouped and in alphabetical order. A leading UTF-8 BOM is accepted. Legacy icon URLs are resolved against the catalog location. An icon is kept only when its resolved path names one existing file directly under `icons/`, regardless of the URL's origin. Other icon paths are discarded.
+When the server creates a new database and the data directory contains a legacy `apps.json`, it imports those apps once, ungrouped and in alphabetical order. A leading UTF-8 BOM is accepted. Legacy icon URLs are resolved against the catalog location. An icon is kept only when its resolved path names one existing file directly under `icons/`, regardless of the URL's origin, and the file name uses only letters, digits, `_`, `-`, and `.` (not first). Rename other icon files before the import. Other icon paths are discarded.
 
 An invalid legacy file stops startup until it is fixed or removed. The error names `apps.json` and, for an invalid entry, its one-based app number. Import is all-or-nothing; a corrected file can be imported on the next start. Later restarts after a successful import never import again.
