@@ -1,3 +1,5 @@
+import { requireAppUrl, requireName, requireWebUrl } from './app-rules.ts';
+
 export interface App {
   name: string;
   url: string;
@@ -16,14 +18,6 @@ function requireText(value: unknown, field: string): string {
   return value.trim();
 }
 
-function requireWebUrl(value: string, base?: string): URL {
-  const url = new URL(value, base);
-  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) {
-    throw new Error('URLs must use HTTP(S) and must not contain credentials.');
-  }
-  return url;
-}
-
 // Validate the entire snapshot so a partial automation write cannot silently hide apps.
 export function parseCatalog(value: unknown, sourceUrl: string): App[] {
   if (!isRecord(value) || !Array.isArray(value.apps)) {
@@ -33,8 +27,8 @@ export function parseCatalog(value: unknown, sourceUrl: string): App[] {
   const source = requireWebUrl(sourceUrl);
   return value.apps.map((entry: unknown, index: number): App => {
     if (!isRecord(entry)) throw new Error(`App ${index + 1} must be an object.`);
-    const name = requireText(entry.name, `App ${index + 1} name`);
-    const url = requireWebUrl(requireText(entry.url, `App ${index + 1} URL`));
+    const name = requireName(entry.name);
+    const url = new URL(requireAppUrl(entry.url));
     const app: App = { name, url: url.href, domain: url.host };
 
     if (entry.icon !== undefined) {

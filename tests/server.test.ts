@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -9,7 +9,7 @@ import { createDashboardServer, readConfig } from '../server/server.ts';
 test('runtime defaults use a fixed port separate from Vite and resolve paths from the app root', () => {
   assert.deepEqual(readConfig({}, '/example/dashboard'), {
     host: '127.0.0.1', port: 4310,
-    buildDir: '/example/dashboard/dist', dataDir: '/example/dashboard/public',
+    buildDir: '/example/dashboard/dist', dataDir: '/example/dashboard/data',
   });
   assert.deepEqual(readConfig({
     BIFROST_HOST: '0.0.0.0', BIFROST_PORT: '9123',
@@ -61,16 +61,17 @@ test('built files and live data are served independently without restart', async
     assert.equal(await head.text(), '');
   });
 
-  await t.test('serves the persistent catalog, not the build snapshot', async () => {
-    const response = await fetch(`${url}/apps.json`);
+  await t.test('serves the API catalog and treats apps.json as an ordinary build path', async () => {
+    const response = await fetch(`${url}/api/catalog`);
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type') ?? '', /application\/json/);
-    assert.match(response.headers.get('cache-control') ?? '', /no-cache/);
-    assert.deepEqual(await response.json(), { apps: [] });
-    const next = '{"apps":[{"name":"New app","url":"https://new.example.test"}]}';
-    await writeFile(join(dataDir, 'apps.next.json'), next);
-    await rename(join(dataDir, 'apps.next.json'), join(dataDir, 'apps.json'));
-    assert.equal(await (await fetch(`${url}/apps.json`)).text(), next);
+    assert.equal(response.headers.get('cache-control'), 'no-cache');
+    assert.deepEqual(await response.json(), { groups: [], ungrouped: [] });
+    await writeFile(join(dataDir, 'apps.json'), '{"apps":[{"name":"Ignored later","url":"https://ignored.test"}]}');
+    assert.deepEqual(await (await fetch(`${url}/api/catalog`)).json(), { groups: [], ungrouped: [] });
+    assert.deepEqual(await (await fetch(`${url}/apps.json`)).json(), { apps: [{ name: 'Bundled sample' }] });
+    await rm(join(buildDir, 'apps.json'));
+    assert.equal((await fetch(`${url}/apps.json`)).status, 404);
     await writeFile(join(dataDir, 'icons', 'new.svg'), '<svg/>');
     assert.equal((await fetch(`${url}/icons/new.svg`)).status, 200);
   });
@@ -83,9 +84,21 @@ test('built files and live data are served independently without restart', async
     assert.equal((await fetch(`${url}/apps.json`)).status, 404);
   });
 
+  await t.test('API path errors remain JSON, including rejected traversal paths', async () => {
+    for (const [path, status] of [
+      ['/api/missing', 404], ['/api/%ZZ', 400], ['/api/%2e%2e%2fprivate.txt', 400],
+    ] satisfies [string, number][]) {
+      const response = await fetch(url + path);
+      assert.equal(response.status, status);
+      assert.equal(response.headers.get('cache-control'), 'no-cache');
+      assert.equal(typeof (await response.json()).error, 'string');
+    }
+  });
+
   await t.test('does not expose other data files, dotfiles, or parent directories', async () => {
     await writeFile(join(buildDir, '.secret'), 'hidden');
-    for (const path of ['/private.txt', '/.secret', '/icons/%2e%2e%2fprivate.txt', '/%2e%2e%2fprivate.txt']) {
+    await writeFile(join(dataDir, 'icons', '.secret'), 'hidden');
+    for (const path of ['/private.txt', '/bifrost.sqlite', '/icons/.secret', '/.secret', '/icons/%2e%2e%2fprivate.txt', '/%2e%2e%2fprivate.txt']) {
       const response = await fetch(url + path);
       assert.ok([400, 403, 404].includes(response.status), `${path}: ${response.status}`);
       assert.doesNotMatch(await response.text(), /not a public route|outside the web root|hidden/);
@@ -93,8 +106,10 @@ test('built files and live data are served independently without restart', async
   });
 });
 
-test('startup fails clearly when the build is missing', () => {
-  assert.throws(() => createDashboardServer({ buildDir: '/example/missing-build', dataDir: '/example/data' }), /build/i);
+test('startup fails clearly when the build is missing', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'bifrost-missing-build-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.throws(() => createDashboardServer({ buildDir: join(root, 'missing-build'), dataDir: join(root, 'data') }), /build/i);
 });
 
 test('an occupied port fails instead of silently selecting another', async t => {
