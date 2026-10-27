@@ -1,21 +1,20 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
-import { createApiHandler } from '../server/api.ts';
-import { openStore } from '../server/store.ts';
+import { createRuntimeMiddleware } from '../server/server.ts';
 
 async function fixture(t: TestContext) {
   const dataDir = await mkdtemp(join(tmpdir(), 'bifrost-api-'));
-  const store = openStore(dataDir);
-  const server = createServer(createApiHandler({ store, dataDir }));
+  const runtime = createRuntimeMiddleware(dataDir);
+  const server = createServer((request, response) => runtime.handle(request, response, () => response.writeHead(404).end()));
   t.after(async () => {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-    store.close();
+    runtime.close();
     await rm(dataDir, { recursive: true, force: true });
   });
   server.listen(0, '127.0.0.1');
@@ -93,7 +92,7 @@ test('rejects unknown fields, invalid values, malformed JSON, and oversized JSON
     assert.equal(response.headers.get('cache-control'), 'no-cache');
   }
   for (const [body, status] of [['{unfinished', 400], ['', 400], [' '.repeat(65537), 413]] satisfies [string, number][]) {
-    const response = await fetch(base + '/api/apps', { method: 'POST', body });
+    const response = await fetch(base + '/api/apps', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
     assert.equal(response.status, status);
     assert.equal(typeof (await response.json()).error, 'string');
   }
@@ -189,4 +188,174 @@ test('icons use content hashes, deduplicate, and are removed only after the last
   assert.equal(max.status, 200);
   assert.equal((await request(`/api/apps/${first.id}`, 'DELETE')).status, 204);
   assert.deepEqual(await readdir(join(dataDir, 'icons')), []);
+});
+
+
+test('rejects URLs that exceed 2048 characters after normalization on create and patch', async t => {
+  const { request } = await fixture(t);
+  const app = await (await request('/api/apps', 'POST', { name: 'App', url: 'https://app.test' })).json();
+  const before = await (await request('/api/catalog')).json();
+  const urls = [
+    'https://a.test/' + 'a b'.repeat(677),
+    'https://' + 'ü'.repeat(20) + '.test/' + 'a'.repeat(2010),
+  ];
+  for (const url of urls) {
+    assert.ok(url.length <= 2048);
+    assert.ok(new URL(url).href.length > 2048);
+    for (const [path, method, body] of [
+      ['/api/apps', 'POST', { name: 'Too long', url }],
+      [`/api/apps/${app.id}`, 'PATCH', { url }],
+    ] satisfies [string, string, unknown][]) {
+      const response = await request(path, method, body);
+      assert.equal(response.status, 400, `${method}: normalized URL length`);
+      assert.equal(typeof (await response.json()).error, 'string');
+    }
+  }
+  assert.deepEqual(await (await request('/api/catalog')).json(), before);
+  const url = 'https://a.test/' + 'a'.repeat(2033);
+  const response = await request(`/api/apps/${app.id}`, 'PATCH', { url });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).url, url);
+});
+
+test('app and group name limits count Unicode code points on create and patch', async t => {
+  const { request } = await fixture(t);
+  for (const [resource, max] of [['apps', 100], ['groups', 60]] satisfies [string, number][]) {
+    const name = '😀'.repeat(max);
+    const body = resource === 'apps' ? { name, url: 'https://app.test' } : { name };
+    const created = await request(`/api/${resource}`, 'POST', body);
+    assert.equal(created.status, 201, `${resource}: accepts ${max} code points`);
+    const entry = await created.json();
+    assert.equal(entry.name, name);
+    const patched = await request(`/api/${resource}/${entry.id}`, 'PATCH', { name: ` ${name} ` });
+    assert.equal(patched.status, 200);
+    assert.equal((await patched.json()).name, name);
+    for (const [path, method, value] of [
+      [`/api/${resource}`, 'POST', { ...body, name: name + '😀' }],
+      [`/api/${resource}/${entry.id}`, 'PATCH', { name: name + '😀' }],
+    ] satisfies [string, string, unknown][]) {
+      const response = await request(path, method, value);
+      assert.equal(response.status, 400, `${method} ${resource}: rejects ${max + 1} code points`);
+      assert.equal(typeof (await response.json()).error, 'string');
+    }
+  }
+});
+
+test('JSON endpoints require application/json and allow content type parameters', async t => {
+  const { request, base } = await fixture(t);
+  const app = await (await request('/api/apps', 'POST', { name: 'App', url: 'https://app.test' })).json();
+  const group = await (await request('/api/groups', 'POST', { name: 'Group' })).json();
+  const endpoints: [string, string, unknown, number][] = [
+    ['/api/apps', 'POST', { name: 'New', url: 'https://new.test' }, 201],
+    [`/api/apps/${app.id}`, 'PATCH', { name: 'Renamed' }, 200],
+    ['/api/groups', 'POST', { name: 'New group' }, 201],
+    [`/api/groups/${group.id}`, 'PATCH', { name: 'Renamed group' }, 200],
+    ['/api/layout', 'PUT', { groups: [{ id: group.id, apps: [] }], ungrouped: [app.id] }, 200],
+  ];
+  const before = await (await request('/api/catalog')).json();
+  for (const [path, method, body] of endpoints) {
+    for (const type of [undefined, 'text/plain', 'application/x-www-form-urlencoded', 'application/jsonp']) {
+      const response = await fetch(base + path, {
+        method, headers: type === undefined ? {} : { 'Content-Type': type },
+        body: Buffer.from(JSON.stringify(body)),
+      });
+      assert.equal(response.status, 415, `${method} ${path}: ${type ?? 'missing header'}`);
+      assert.equal(typeof (await response.json()).error, 'string');
+      assert.equal(response.headers.get('cache-control'), 'no-cache');
+    }
+  }
+  assert.deepEqual(await (await request('/api/catalog')).json(), before);
+  // Apply the layout before adding resources so its snapshot is still current.
+  for (const [path, method, body, status] of endpoints.reverse()) {
+    const response = await fetch(base + path, {
+      method, headers: { 'Content-Type': 'Application/JSON; charset=utf-8' }, body: JSON.stringify(body),
+    });
+    assert.equal(response.status, status);
+  }
+});
+
+test('empty app and group patches return 400 without changing the catalog', async t => {
+  const { request } = await fixture(t);
+  const app = await (await request('/api/apps', 'POST', { name: 'App', url: 'https://app.test' })).json();
+  const group = await (await request('/api/groups', 'POST', { name: 'Group' })).json();
+  const before = await (await request('/api/catalog')).json();
+  for (const path of [`/api/apps/${app.id}`, `/api/groups/${group.id}`]) {
+    const response = await request(path, 'PATCH', {});
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'Body must contain at least one field.' });
+  }
+  assert.deepEqual(await (await request('/api/catalog')).json(), before);
+});
+
+test('204 app and group deletions have no content type and no body', async t => {
+  const { request } = await fixture(t);
+  const app = await (await request('/api/apps', 'POST', { name: 'App', url: 'https://app.test' })).json();
+  const group = await (await request('/api/groups', 'POST', { name: 'Group' })).json();
+  for (const path of [`/api/apps/${app.id}`, `/api/groups/${group.id}`]) {
+    const response = await request(path, 'DELETE');
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get('content-type'), null);
+    assert.equal(await response.text(), '');
+    assert.equal(response.headers.get('cache-control'), 'no-cache');
+  }
+});
+
+test('API routing uses the decoded path and rejects invalid path IDs with 404', async t => {
+  const { request } = await fixture(t);
+  const catalog = await request('/api/%63atalog?ignored=true');
+  assert.equal(catalog.status, 200);
+  assert.deepEqual(await catalog.json(), { groups: [], ungrouped: [] });
+  const created = await request('/%61pi/%61pps', 'POST', { name: 'App', url: 'https://app.test' });
+  assert.equal(created.status, 201);
+  const app = await created.json();
+  const patched = await request(`/api/%61pps/${app.id}`, 'PATCH', { name: 'Renamed' });
+  assert.equal(patched.status, 200);
+  for (const resource of ['apps', 'groups']) {
+    for (const id of ['0', '-1', '1.5', '01', 'NaN', '9007199254740992', '99999999999999999999']) {
+      const response = await request(`/api/${resource}/${id}`, 'DELETE');
+      assert.equal(response.status, 404, `${resource}/${id}`);
+      assert.equal(typeof (await response.json()).error, 'string');
+    }
+  }
+  const icon = await request('/api/apps/99999999999999999999/icon', 'DELETE');
+  assert.equal(icon.status, 404);
+  const bodyId = await request(`/api/apps/${app.id}`, 'PATCH', { groupId: 9007199254740992 });
+  assert.equal(bodyId.status, 400);
+});
+
+test('deleting an app while its icon streams leaves no icon file behind', async t => {
+  const { request, base, dataDir } = await fixture(t);
+  const app = await (await request('/api/apps', 'POST', { name: 'App', url: 'https://app.test' })).json();
+  const before = await readdir(join(dataDir, 'icons'));
+  const upload = httpRequest(`${base}/api/apps/${app.id}/icon`, {
+    method: 'PUT', headers: { 'Content-Type': 'image/svg+xml', Expect: '100-continue' },
+  });
+  t.after(() => upload.destroy());
+  const continued = once(upload, 'continue');
+  const completed = once(upload, 'response');
+  upload.flushHeaders();
+  // The continue response confirms the server has accepted headers and is awaiting bytes.
+  await continued;
+  upload.write('<svg>');
+  assert.equal((await request(`/api/apps/${app.id}`, 'DELETE')).status, 204);
+  upload.end('</svg>');
+  const [response] = await completed;
+  assert.equal(response.statusCode, 404);
+  response.resume();
+  await once(response, 'end');
+  assert.deepEqual(await readdir(join(dataDir, 'icons')), before);
+  assert.deepEqual(await (await request('/api/catalog')).json(), { groups: [], ungrouped: [] });
+});
+
+test('PUT layout applies the exact order of at least three ungrouped apps', async t => {
+  const { request } = await fixture(t);
+  const apps = [];
+  for (const name of ['A', 'B', 'C']) {
+    apps.push(await (await request('/api/apps', 'POST', { name, url: 'https://app.test' })).json());
+  }
+  const ordered = [apps[2], apps[0], apps[1]];
+  const response = await request('/api/layout', 'PUT', { groups: [], ungrouped: ordered.map(app => app.id) });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).ungrouped, ordered);
+  assert.deepEqual((await (await request('/api/catalog')).json()).ungrouped, ordered);
 });

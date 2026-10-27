@@ -1,12 +1,20 @@
-import { resolve } from 'node:path';
-import { defineConfig } from 'vite';
-import { createRuntimeMiddleware } from './server/server.ts';
+import { defineConfig, normalizePath } from 'vite';
+import { createRuntimeMiddleware, resolveDataDir } from './server/server.ts';
 
 export default defineConfig({
+  server: {
+    fs: {
+      deny: [
+        '.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**',
+        '**/data/**', '**/sample/**',
+        `${normalizePath(resolveDataDir(process.env))}/**`,
+      ],
+    },
+  },
   plugins: [{
     name: 'bifrost-api',
     configureServer(server) {
-      const dataDir = resolve(server.config.root, process.env.BIFROST_DATA_DIR || 'data');
+      const dataDir = resolveDataDir(process.env);
       const runtime = createRuntimeMiddleware(dataDir);
       server.middlewares.use(runtime.handle);
       server.httpServer?.once('close', runtime.close);

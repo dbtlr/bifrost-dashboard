@@ -2,6 +2,7 @@ import { statSync } from 'node:fs';
 import { createServer, STATUS_CODES } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import serveStatic from 'serve-static';
 import { createApiHandler } from './api.ts';
 import { openStore } from './store.ts';
@@ -16,6 +17,10 @@ interface ServerConfig extends FileRoots {
   port: number;
 }
 
+export function resolveDataDir(env: NodeJS.ProcessEnv, appRoot = fileURLToPath(new URL('../', import.meta.url))): string {
+  return resolve(appRoot, env.BIFROST_DATA_DIR || 'data');
+}
+
 export function readConfig(env: NodeJS.ProcessEnv, appRoot: string): ServerConfig {
   const rawPort = env.BIFROST_PORT ?? '4310';
   const port = Number(rawPort);
@@ -26,7 +31,7 @@ export function readConfig(env: NodeJS.ProcessEnv, appRoot: string): ServerConfi
     host: env.BIFROST_HOST || '127.0.0.1',
     port,
     buildDir: resolve(appRoot, env.BIFROST_BUILD_DIR || 'dist'),
-    dataDir: resolve(appRoot, env.BIFROST_DATA_DIR || 'data'),
+    dataDir: resolveDataDir(env, appRoot),
   };
 }
 
@@ -74,7 +79,7 @@ export function createRuntimeMiddleware(dataDir: string) {
       return;
     }
     if (path === '/api' || path.startsWith('/api/')) {
-      void api(request, response);
+      void api(request, response, path);
     } else if (path === '/icons' || path.startsWith('/icons/')) {
       serveData(request, response, (error?: { status?: number }) => fileError(response, error));
     } else {

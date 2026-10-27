@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { requireAppUrl, requireName } from '../src/app-rules.ts';
+import { isRecord, requireAppUrl, requireName } from '../src/app-rules.ts';
 
 export interface StoredApp {
   id: number;
@@ -41,10 +41,6 @@ export class StoreError extends Error {
   }
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function appRow(row: Record<string, unknown>): StoredApp {
   const { id, name, url, icon, groupId } = row;
   if (typeof id !== 'number' || typeof name !== 'string' || typeof url !== 'string'
@@ -56,10 +52,37 @@ function appRow(row: Record<string, unknown>): StoredApp {
 
 function localIcon(value: unknown, dataDir: string): string | null {
   if (typeof value !== 'string') return null;
-  const path = value.replace(/^\//, '');
-  if (!path.startsWith('icons/') || path.includes('\\') || path.includes('\0')
-    || path.split('/').some(part => !part || part.startsWith('.'))) return null;
+  let filename: string;
+  try {
+    const url = new URL(value, 'http://legacy.invalid/apps.json');
+    const match = /^\/icons\/+([^/]+)$/.exec(url.pathname);
+    if (!match) return null;
+    filename = decodeURIComponent(match[1]!);
+  } catch {
+    return null;
+  }
+  if (filename.startsWith('.') || /[/\\\0]/.test(filename)) return null;
+  const path = `icons/${filename}`;
   return statSync(join(dataDir, path), { throwIfNoEntry: false })?.isFile() ? path : null;
+}
+
+function legacyApps(dataDir: string) {
+  const file = join(dataDir, 'apps.json');
+  try {
+    if (!statSync(file, { throwIfNoEntry: false })?.isFile()) return [];
+    const value: unknown = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+    if (!isRecord(value) || !Array.isArray(value.apps)) throw new Error('The catalog must contain an apps array.');
+    return value.apps.map((entry: unknown, index: number) => {
+      try {
+        if (!isRecord(entry)) throw new Error('must be an object.');
+        return { name: requireName(entry.name), url: requireAppUrl(entry.url), icon: localIcon(entry.icon, dataDir) };
+      } catch (error) {
+        throw new Error(`app ${index + 1} ${error instanceof Error ? error.message : 'is invalid.'}`);
+      }
+    }).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }) || a.url.localeCompare(b.url));
+  } catch (error) {
+    throw new Error(`Cannot import ${file}: ${error instanceof Error ? error.message : 'Invalid catalog.'}`);
+  }
 }
 
 export function openStore(dataDir: string) {
@@ -92,14 +115,7 @@ export function openStore(dataDir: string) {
           );
           PRAGMA user_version = 1;
         `);
-        const legacy = join(dataDir, 'apps.json');
-        if (!statSync(legacy, { throwIfNoEntry: false })?.isFile()) return;
-        const value: unknown = JSON.parse(readFileSync(legacy, 'utf8'));
-        if (!isRecord(value) || !Array.isArray(value.apps)) throw new Error('The catalog must contain an apps array.');
-        const apps = value.apps.map((entry: unknown) => {
-          if (!isRecord(entry)) throw new Error('Legacy app must be an object.');
-          return { name: requireName(entry.name), url: requireAppUrl(entry.url), icon: localIcon(entry.icon, dataDir) };
-        }).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }) || a.url.localeCompare(b.url));
+        const apps = legacyApps(dataDir);
         const insert = db.prepare('INSERT INTO apps (name, url, icon, group_id, position) VALUES (?, ?, ?, NULL, ?)');
         apps.forEach((app, index) => insert.run(app.name, app.url, app.icon, index));
       });
@@ -159,11 +175,10 @@ export function openStore(dataDir: string) {
 
   function createApp(input: AppInput): StoredApp {
     const name = requireName(input.name);
-    const url = requireAppUrl(input.url);
     return transaction(() => {
       if (input.groupId !== null) getGroup(input.groupId);
       const result = db.prepare('INSERT INTO apps (name, url, group_id, position) VALUES (?, ?, ?, ?)')
-        .run(name, url, input.groupId, nextPosition(input.groupId));
+        .run(name, input.url, input.groupId, nextPosition(input.groupId));
       return getApp(Number(result.lastInsertRowid));
     });
   }
@@ -172,7 +187,7 @@ export function openStore(dataDir: string) {
     return transaction(() => {
       const app = getApp(id);
       const name = changes.name === undefined ? app.name : requireName(changes.name);
-      const url = changes.url === undefined ? app.url : requireAppUrl(changes.url);
+      const url = changes.url ?? app.url;
       const groupId = changes.groupId === undefined ? app.groupId : changes.groupId;
       if (groupId !== null) getGroup(groupId);
       if (groupId !== app.groupId) {
@@ -185,7 +200,8 @@ export function openStore(dataDir: string) {
 
   function uniqueGroupName(name: string, id?: number): string {
     const normalized = requireName(name, 60);
-    if (catalog().groups.some(group => group.id !== id && group.name.toLowerCase() === normalized.toLowerCase())) {
+    const folded = (value: string) => value.normalize('NFKC').toUpperCase().toLowerCase();
+    if (catalog().groups.some(group => group.id !== id && folded(group.name) === folded(normalized))) {
       throw new StoreError(409, 'A group with that name already exists.');
     }
     return normalized;

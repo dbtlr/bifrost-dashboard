@@ -1,4 +1,4 @@
-import { requireAppUrl, requireName, requireWebUrl } from './app-rules.ts';
+import { isRecord, requireAppUrl, requireName, requireWebUrl } from './app-rules.ts';
 
 export interface App {
   id: number;
@@ -18,10 +18,6 @@ export interface Group {
 export interface Catalog {
   groups: Group[];
   ungrouped: App[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function requireId(value: unknown, label: string): number {

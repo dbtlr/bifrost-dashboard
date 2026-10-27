@@ -118,3 +118,79 @@ test('a database created without legacy data never imports a file added on a lat
   store = openStore(dataDir);
   assert.deepEqual(store.catalog(), { groups: [], ungrouped: [] });
 });
+
+test('group names use Unicode case folding on create and rename', async t => {
+  const store = await fixture(t);
+  const other = store.createGroup('Other');
+  for (const [name, equivalent] of [['STRASSE', 'straße'], ['ΟΔΟΣ', 'οδοσ'], ['Office', 'Ｏｆｆｉｃｅ']]) {
+    const group = store.createGroup(name!);
+    assert.throws(() => store.createGroup(equivalent!), { status: 409 });
+    assert.throws(() => store.updateGroup(other.id, equivalent!), { status: 409 });
+    assert.equal(store.updateGroup(group.id, equivalent!).name, equivalent);
+  }
+});
+
+test('legacy icons resolve URL paths to existing files directly under icons', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'bifrost-legacy-icons-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  await mkdir(join(dataDir, 'icons', 'nested'), { recursive: true });
+  await writeFile(join(dataDir, 'icons', 'home.svg'), '<svg/>');
+  await writeFile(join(dataDir, 'icons', 'nested', 'home.svg'), '<svg/>');
+  const icons = [
+    './icons/home.svg', 'icons//home.svg', '/icons/home.svg',
+    'http://host/icons/home.svg', 'https://other.test/icons/home.svg',
+    'icons/../bifrost.sqlite', 'icons/nested/home.svg', 'icons/missing.svg',
+    'http://host/elsewhere/home.svg', 'icons/%2e%2e%2fbifrost.sqlite', 'http://[invalid',
+  ];
+  await writeFile(join(dataDir, 'apps.json'), JSON.stringify({ apps: icons.map((icon, index) => ({
+    name: `App ${index + 1}`, url: 'https://app.test', icon,
+  })) }));
+  const store = openStore(dataDir);
+  t.after(() => store.close());
+  assert.deepEqual(store.catalog().ungrouped.map(app => app.icon), [
+    'icons/home.svg', 'icons/home.svg', 'icons/home.svg', 'icons/home.svg', 'icons/home.svg',
+    null, null, null, null, null, null,
+  ]);
+});
+
+test('imports a legacy catalog with a leading UTF-8 BOM', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'bifrost-legacy-bom-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  await writeFile(join(dataDir, 'apps.json'), '\uFEFF{"apps":[{"name":"App","url":"https://app.test"}]}');
+  const store = openStore(dataDir);
+  t.after(() => store.close());
+  assert.equal(store.catalog().ungrouped[0]?.name, 'App');
+});
+
+test('legacy failures name the source file and entry, and leave import all-or-nothing', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'bifrost-legacy-error-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const legacy = join(dataDir, 'apps.json');
+  const valid = { name: 'Valid', url: 'https://valid.test' };
+  for (const [invalid, message] of [
+    [null, 'app 3 must be an object.'],
+    [{ ...valid, name: '' }, 'app 3 name must be between 1 and 100 characters after trimming.'],
+    [{ ...valid, url: 'bad' }, 'app 3 url must be an absolute http or https URL without credentials.'],
+  ]) {
+    await writeFile(legacy, JSON.stringify({ apps: [valid, valid, invalid] }));
+    assert.throws(() => openStore(dataDir), { message: `Cannot import ${legacy}: ${message}` });
+  }
+  await writeFile(legacy, '{"apps":{}}');
+  assert.throws(() => openStore(dataDir), { message: `Cannot import ${legacy}: The catalog must contain an apps array.` });
+  await writeFile(legacy, '{broken');
+  assert.throws(() => openStore(dataDir), error => error instanceof Error && error.message.startsWith(`Cannot import ${legacy}: `));
+  await writeFile(legacy, JSON.stringify({ apps: [{ name: 'Fixed', url: 'https://fixed.test' }] }));
+  const store = openStore(dataDir);
+  t.after(() => store.close());
+  assert.deepEqual(store.catalog().ungrouped.map(app => app.name), ['Fixed']);
+});
+
+test('new apps append after surviving group apps when the first apps were deleted', async t => {
+  const store = await fixture(t);
+  const group = store.createGroup('Group');
+  const apps = ['A', 'B', 'C', 'D'].map(name => store.createApp({ name, url: 'https://app.test', groupId: group.id }));
+  store.deleteApp(apps[0]!.id);
+  store.deleteApp(apps[1]!.id);
+  const added = store.createApp({ name: 'New', url: 'https://app.test', groupId: group.id });
+  assert.deepEqual(store.catalog().groups[0]?.apps, [apps[2], apps[3], added]);
+});

@@ -1,10 +1,81 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
+import type { TestContext } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { createServer as createViteServer } from 'vite';
 import { createDashboardServer, readConfig } from '../server/server.ts';
+
+const appRoot = fileURLToPath(new URL('../', import.meta.url));
+
+async function devFixture(t: TestContext, { relativeDataDir = false, directory = 'data' } = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'bifrost-vite-'));
+  let server: Awaited<ReturnType<typeof createViteServer>> | undefined;
+  t.after(async () => {
+    await server?.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const dataDir = relativeDataDir ? await mkdtemp(join(appRoot, '.bifrost-vite-state-')) : join(root, directory);
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(join(root, 'sample'));
+  await writeFile(join(root, 'index.html'), '<h1>Development</h1>');
+  await writeFile(join(root, 'sample', 'apps.json'), '{"apps":[]}');
+  await writeFile(join(dataDir, 'apps.json'), '{"apps":[{"name":"Dev app","url":"https://dev.test"}]}');
+  const previous = process.env.BIFROST_DATA_DIR;
+  process.env.BIFROST_DATA_DIR = relativeDataDir ? relative(appRoot, dataDir) : dataDir;
+  try {
+    server = await createViteServer({
+      configFile: join(appRoot, 'vite.config.ts'), root,
+      logLevel: 'silent',
+      server: { host: '127.0.0.1', port: 0, hmr: false },
+    });
+  } finally {
+    if (previous === undefined) delete process.env.BIFROST_DATA_DIR;
+    else process.env.BIFROST_DATA_DIR = previous;
+  }
+  await server.listen();
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address !== 'string');
+  return { root, dataDir, base: `http://127.0.0.1:${address.port}` };
+}
+
+test('Vite dev serves the API but denies database, legacy data, and sample files', async t => {
+  const { base } = await devFixture(t);
+  for (const path of ['/data/bifrost.sqlite', '/data/apps.json', '/sample/apps.json']) {
+    const response = await fetch(base + path);
+    assert.ok([403, 404].includes(response.status), `${path}: ${response.status}`);
+  }
+  const response = await fetch(base + '/api/catalog');
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ungrouped[0].name, 'Dev app');
+});
+
+test('Vite and production resolve relative data directories from the application root', async t => {
+  const { base, dataDir } = await devFixture(t, { relativeDataDir: true });
+  const env = { BIFROST_DATA_DIR: relative(appRoot, dataDir) };
+  assert.equal(readConfig(env, appRoot).dataDir, dataDir);
+  const response = await fetch(base + '/api/catalog');
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ungrouped[0]?.name, 'Dev app');
+});
+
+test('Vite denies custom data directories through root and filesystem URLs', async t => {
+  const { base, dataDir } = await devFixture(t, { directory: 'private state' });
+  for (const path of [
+    '/private%20state/apps.json', '/private%20state/bifrost.sqlite',
+    `/@fs${dataDir}/apps.json`, `/@fs${dataDir}/bifrost.sqlite`,
+  ]) {
+    const response = await fetch(base + path);
+    assert.ok([403, 404].includes(response.status), `${path}: ${response.status}`);
+    await response.arrayBuffer();
+  }
+  assert.equal((await fetch(base + '/api/catalog')).status, 200);
+});
 
 test('runtime defaults use a fixed port separate from Vite and resolve paths from the app root', () => {
   assert.deepEqual(readConfig({}, '/example/dashboard'), {
@@ -110,6 +181,20 @@ test('startup fails clearly when the build is missing', async t => {
   const root = await mkdtemp(join(tmpdir(), 'bifrost-missing-build-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   assert.throws(() => createDashboardServer({ buildDir: join(root, 'missing-build'), dataDir: join(root, 'data') }), /build/i);
+});
+
+test('startup reports the legacy file and invalid app before exiting', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'bifrost-startup-import-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDir = join(root, 'data');
+  await mkdir(dataDir);
+  await writeFile(join(root, 'index.html'), '<h1>Built dashboard</h1>');
+  await writeFile(join(dataDir, 'apps.json'), '{"apps":[{"name":"","url":"https://app.test"}]}');
+  const result = spawnSync(process.execPath, [join(appRoot, 'server', 'start.ts')], {
+    env: { ...process.env, BIFROST_BUILD_DIR: root, BIFROST_DATA_DIR: dataDir }, encoding: 'utf8',
+  });
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.includes(`Cannot import ${join(dataDir, 'apps.json')}: app 1 name must be`), result.stderr);
 });
 
 test('an occupied port fails instead of silently selecting another', async t => {

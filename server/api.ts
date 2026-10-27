@@ -2,12 +2,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { requireAppUrl, requireName } from '../src/app-rules.ts';
-import { isRecord, StoreError } from './store.ts';
+import { isRecord, requireAppUrl, requireName } from '../src/app-rules.ts';
+import { StoreError } from './store.ts';
 import type { AppInput, Layout, Store } from './store.ts';
 
 function json(response: ServerResponse, status: number, body?: unknown): void {
   response.setHeader('Cache-Control', 'no-cache');
+  if (status === 204) {
+    response.writeHead(status);
+    response.end();
+    return;
+  }
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   response.end(body === undefined ? undefined : JSON.stringify(body));
 }
@@ -29,6 +34,12 @@ function id(value: unknown): number {
   return value;
 }
 
+function pathId(value: string): number {
+  const result = Number(value);
+  if (!Number.isSafeInteger(result) || result < 1) throw new StoreError(404, 'API route does not exist.');
+  return result;
+}
+
 function validated<T>(read: () => T): T {
   try {
     return read();
@@ -39,6 +50,7 @@ function validated<T>(read: () => T): T {
 
 function appInput(value: unknown, partial: boolean): Partial<AppInput> {
   const body = object(value, ['name', 'url', 'groupId']);
+  if (partial && Object.keys(body).length === 0) badRequest('Body must contain at least one field.');
   const result: Partial<AppInput> = {};
   if (!partial || 'name' in body) result.name = validated(() => requireName(body.name));
   if (!partial || 'url' in body) result.url = validated(() => requireAppUrl(body.url));
@@ -79,6 +91,8 @@ function readBody(request: IncomingMessage, limit: number): Promise<Buffer> {
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
+  const contentType = request.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
+  if (contentType !== 'application/json') throw new StoreError(415, 'Content-Type must be application/json.');
   const body = await readBody(request, 64 * 1024);
   return validated(() => JSON.parse(body.toString('utf8')));
 }
@@ -107,12 +121,13 @@ function writeIcon(dataDir: string, bytes: Buffer, extension: string): string {
 }
 
 export function createApiHandler({ store, dataDir }: { store: Store; dataDir: string }) {
-  return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+  return async (request: IncomingMessage, response: ServerResponse, path: string): Promise<void> => {
     response.setHeader('Cache-Control', 'no-cache');
     try {
-      const path = (request.url ?? '/').split('?')[0];
-      const app = /^\/api\/apps\/([1-9]\d*)(\/icon)?$/.exec(path ?? '');
-      const group = /^\/api\/groups\/([1-9]\d*)$/.exec(path ?? '');
+      const app = /^\/api\/apps\/([1-9]\d*)(\/icon)?$/.exec(path);
+      const group = /^\/api\/groups\/([1-9]\d*)$/.exec(path);
+      const appId = app ? pathId(app[1]!) : null;
+      const groupId = group ? pathId(group[1]!) : null;
       let methods: string[];
       if (path === '/api/catalog') methods = ['GET'];
       else if (path === '/api/apps' || path === '/api/groups') methods = ['POST'];
@@ -130,8 +145,7 @@ export function createApiHandler({ store, dataDir }: { store: Store; dataDir: st
         const input = appInput(await readJson(request), false);
         if (input.name === undefined || input.url === undefined) badRequest('name and url are required.');
         json(response, 201, store.createApp({ name: input.name, url: input.url, groupId: input.groupId ?? null }));
-      } else if (app) {
-        const appId = id(Number(app[1]));
+      } else if (app && appId !== null) {
         if (app[2]) {
           store.getApp(appId);
           if (request.method === 'DELETE') {
@@ -153,12 +167,12 @@ export function createApiHandler({ store, dataDir }: { store: Store; dataDir: st
           json(response, 200, store.updateApp(appId, appInput(await readJson(request), true)));
         }
       } else if (path === '/api/groups' || group) {
-        const groupId = group ? id(Number(group[1])) : null;
         if (request.method === 'DELETE' && groupId !== null) {
           store.deleteGroup(groupId);
           json(response, 204);
         } else {
           const body = object(await readJson(request), ['name']);
+          if (groupId !== null && Object.keys(body).length === 0) badRequest('Body must contain at least one field.');
           const name = validated(() => requireName(body.name, 60));
           json(response, groupId === null ? 201 : 200, groupId === null ? store.createGroup(name) : store.updateGroup(groupId, name));
         }
