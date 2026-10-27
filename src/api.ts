@@ -61,6 +61,7 @@ export const createGroup = (name: string) => sendJson('POST', 'groups', { name }
 export const renameGroup = (id: number, name: string) => sendJson('PATCH', `groups/${id}`, { name });
 export const deleteGroup = (id: number) => send('DELETE', `groups/${id}`);
 
-export async function saveLayout(layout: Layout): Promise<Catalog> {
-  return parseCatalog(await sendJson('PUT', 'layout', layout), document.baseURI);
+// The revision is that of the catalog the layout was built from; the server rejects it with 409 if it is stale.
+export async function saveLayout(layout: Layout, revision: number): Promise<Catalog> {
+  return parseCatalog(await sendJson('PUT', 'layout', { revision, ...layout }), document.baseURI);
 }

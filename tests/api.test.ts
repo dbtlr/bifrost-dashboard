@@ -44,21 +44,21 @@ test('JSON API creates, patches, orders, and deletes apps and groups with docume
   const renamed = await request(`/api/groups/${group.id}`, 'PATCH', { name: 'Files' });
   assert.equal(renamed.status, 200);
   assert.deepEqual(await renamed.json(), { ...group, name: 'Files' });
-  const layout = await request('/api/layout', 'PUT', { groups: [{ id: group.id, apps: [app.id] }], ungrouped: [] });
+  const layout = await request('/api/layout', 'PUT', { revision: 4, groups: [{ id: group.id, apps: [app.id] }], ungrouped: [] });
   assert.equal(layout.status, 200);
-  assert.deepEqual(await layout.json(), { groups: [{ id: group.id, name: 'Files', apps: [{ ...app, name: 'Album' }] }], ungrouped: [] });
+  assert.deepEqual(await layout.json(), { revision: 5, groups: [{ id: group.id, name: 'Files', apps: [{ ...app, name: 'Album' }] }], ungrouped: [] });
   const response = await request('/api/catalog');
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'no-cache');
   assert.match(response.headers.get('content-type') ?? '', /application\/json/);
-  const conflict = await request('/api/layout', 'PUT', { groups: [], ungrouped: [] });
+  const conflict = await request('/api/layout', 'PUT', { revision: 5, groups: [], ungrouped: [] });
   assert.equal(conflict.status, 409);
   assert.deepEqual(await (await request('/api/catalog')).json(), await response.json());
   const deleteGroup = await request(`/api/groups/${group.id}`, 'DELETE');
   assert.equal(deleteGroup.status, 204);
   assert.equal(await deleteGroup.text(), '');
   assert.equal((await request(`/api/apps/${app.id}`, 'DELETE')).status, 204);
-  assert.deepEqual(await (await request('/api/catalog')).json(), { groups: [], ungrouped: [] });
+  assert.deepEqual(await (await request('/api/catalog')).json(), { revision: 7, groups: [], ungrouped: [] });
 });
 
 test('rejects unknown fields, invalid values, malformed JSON, and oversized JSON without mutation', async t => {
@@ -72,7 +72,10 @@ test('rejects unknown fields, invalid values, malformed JSON, and oversized JSON
     [`/api/groups/${group.id}`, 'PATCH', { name: 'New', id: group.id }],
     ['/api/layout', 'PUT', { groups: [{ id: group.id, apps: [app.id], extra: true }], ungrouped: [] }],
     ['/api/layout', 'PUT', { groups: [], ungrouped: [], extra: true }],
-    ['/api/layout', 'PUT', { groups: [], ungrouped: ['1'] }],
+    ['/api/layout', 'PUT', { revision: 2, groups: [], ungrouped: ['1'] }],
+    ['/api/layout', 'PUT', { groups: [{ id: group.id, apps: [] }], ungrouped: [app.id] }],
+    ...[-1, 1.5, '2', null].map(revision =>
+      ['/api/layout', 'PUT', { revision, groups: [{ id: group.id, apps: [] }], ungrouped: [app.id] }] satisfies [string, string, unknown]),
     ['/api/apps', 'POST', []], ['/api/apps', 'POST', null], ['/api/apps', 'POST', {}],
     ['/api/apps', 'POST', { name: ' ', url: 'https://app.test' }],
     ['/api/apps', 'POST', { name: 'a'.repeat(101), url: 'https://app.test' }],
@@ -250,7 +253,7 @@ test('JSON endpoints require application/json and allow content type parameters'
     [`/api/apps/${app.id}`, 'PATCH', { name: 'Renamed' }, 200],
     ['/api/groups', 'POST', { name: 'New group' }, 201],
     [`/api/groups/${group.id}`, 'PATCH', { name: 'Renamed group' }, 200],
-    ['/api/layout', 'PUT', { groups: [{ id: group.id, apps: [] }], ungrouped: [app.id] }, 200],
+    ['/api/layout', 'PUT', { revision: 2, groups: [{ id: group.id, apps: [] }], ungrouped: [app.id] }, 200],
   ];
   const before = await (await request('/api/catalog')).json();
   for (const [path, method, body] of endpoints) {
@@ -304,7 +307,7 @@ test('API routing uses the decoded path and rejects invalid path IDs with 404', 
   const { request } = await fixture(t);
   const catalog = await request('/api/%63atalog?ignored=true');
   assert.equal(catalog.status, 200);
-  assert.deepEqual(await catalog.json(), { groups: [], ungrouped: [] });
+  assert.deepEqual(await catalog.json(), { revision: 0, groups: [], ungrouped: [] });
   const created = await request('/%61pi/%61pps', 'POST', { name: 'App', url: 'https://app.test' });
   assert.equal(created.status, 201);
   const app = await created.json();
@@ -344,7 +347,7 @@ test('deleting an app while its icon streams leaves no icon file behind', async 
   response.resume();
   await once(response, 'end');
   assert.deepEqual(await readdir(join(dataDir, 'icons')), before);
-  assert.deepEqual(await (await request('/api/catalog')).json(), { groups: [], ungrouped: [] });
+  assert.deepEqual(await (await request('/api/catalog')).json(), { revision: 2, groups: [], ungrouped: [] });
 });
 
 test('PUT layout applies the exact order of at least three ungrouped apps', async t => {
@@ -354,8 +357,49 @@ test('PUT layout applies the exact order of at least three ungrouped apps', asyn
     apps.push(await (await request('/api/apps', 'POST', { name, url: 'https://app.test' })).json());
   }
   const ordered = [apps[2], apps[0], apps[1]];
-  const response = await request('/api/layout', 'PUT', { groups: [], ungrouped: ordered.map(app => app.id) });
+  const response = await request('/api/layout', 'PUT', { revision: 3, groups: [], ungrouped: ordered.map(app => app.id) });
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).ungrouped, ordered);
   assert.deepEqual((await (await request('/api/catalog')).json()).ungrouped, ordered);
+});
+
+test('the catalog revision increases with every change made through the API', async t => {
+  const { request, base } = await fixture(t);
+  let expected = 0;
+  const revision = async () => (await (await request('/api/catalog')).json()).revision;
+  const changes = async (send: () => Promise<Response>, status: number) => {
+    const response = await send();
+    assert.equal(response.status, status);
+    expected += 1;
+    assert.equal(await revision(), expected);
+    return response.status === 204 ? undefined : response.json();
+  };
+  assert.equal(await revision(), 0);
+  const group = await changes(() => request('/api/groups', 'POST', { name: 'Group' }), 201);
+  const app = await changes(() => request('/api/apps', 'POST', { name: 'App', url: 'https://app.test' }), 201);
+  await changes(() => request(`/api/apps/${app.id}`, 'PATCH', { groupId: group.id }), 200);
+  await changes(() => request(`/api/groups/${group.id}`, 'PATCH', { name: 'Renamed' }), 200);
+  await changes(() => fetch(`${base}/api/apps/${app.id}/icon`, { method: 'PUT', headers: { 'Content-Type': 'image/svg+xml' }, body: '<svg/>' }), 200);
+  await changes(() => request(`/api/apps/${app.id}/icon`, 'DELETE'), 200);
+  const layout = await changes(() => request('/api/layout', 'PUT', { revision: expected, groups: [{ id: group.id, apps: [app.id] }], ungrouped: [] }), 200);
+  assert.equal(layout.revision, expected);
+  await changes(() => request(`/api/groups/${group.id}`, 'DELETE'), 204);
+  await changes(() => request(`/api/apps/${app.id}`, 'DELETE'), 204);
+  assert.equal((await request('/api/groups', 'POST', { name: '' })).status, 400);
+  assert.equal(await revision(), expected);
+});
+
+test('a layout with a stale revision returns 409 and changes nothing', async t => {
+  const { request } = await fixture(t);
+  const first = await (await request('/api/groups', 'POST', { name: 'First' })).json();
+  const second = await (await request('/api/groups', 'POST', { name: 'Second' })).json();
+  const read = await (await request('/api/catalog')).json();
+  // Another client reorders the groups after the first client read the catalog.
+  assert.equal((await request('/api/layout', 'PUT', { revision: read.revision, groups: [{ id: second.id, apps: [] }, { id: first.id, apps: [] }], ungrouped: [] })).status, 200);
+  const before = await (await request('/api/catalog')).json();
+  const response = await request('/api/layout', 'PUT', { revision: read.revision, groups: [{ id: first.id, apps: [] }, { id: second.id, apps: [] }], ungrouped: [] });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /^The catalog changed since it was read/);
+  assert.deepEqual(await (await request('/api/catalog')).json(), before);
+  assert.deepEqual(before.groups.map((group: { name: string }) => group.name), ['Second', 'First']);
 });

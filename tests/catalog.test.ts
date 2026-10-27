@@ -6,10 +6,11 @@ const base = 'https://dashboard.example.test/';
 const api = 'https://dashboard.example.test/api/catalog';
 const immich = { id: 7, name: 'Immich', url: 'https://photos.example.test', icon: 'icons/immich.svg', groupId: 2 };
 const home = { id: 9, name: ' Home Assistant ', url: 'http://home.example.test:8123', icon: null, groupId: null };
-const sample = { groups: [{ id: 2, name: 'Media', apps: [immich] }, { id: 3, name: 'Empty', apps: [] }], ungrouped: [home] };
+const sample = { revision: 3, groups: [{ id: 2, name: 'Media', apps: [immich] }, { id: 3, name: 'Empty', apps: [] }], ungrouped: [home] };
 
 test('reads groups in order, keeps domains, and resolves icons against the dashboard root', () => {
   const catalog = parseCatalog(sample, base);
+  assert.equal(catalog.revision, 3);
   assert.deepEqual(catalog.groups.map(group => group.name), ['Media', 'Empty']);
   assert.deepEqual(catalog.groups[0]?.apps[0], {
     id: 7, name: 'Immich', url: 'https://photos.example.test/', domain: 'photos.example.test',
@@ -24,7 +25,7 @@ test('icons resolve beside the dashboard, including subpath deployments', () => 
 });
 
 test('order is preserved rather than sorted', () => {
-  const catalog = parseCatalog({ groups: [], ungrouped: [{ ...home, id: 1, name: 'Zed' }, { ...home, id: 2, name: 'Alpha' }] }, base);
+  const catalog = parseCatalog({ revision: 0, groups: [], ungrouped: [{ ...home, id: 1, name: 'Zed' }, { ...home, id: 2, name: 'Alpha' }] }, base);
   assert.deepEqual(catalog.ungrouped.map(app => app.name), ['Zed', 'Alpha']);
 });
 
@@ -34,19 +35,20 @@ test('invalid catalogs fail validation rather than silently dropping apps', () =
     { groups: [{ id: 1, name: ' ', apps: [] }], ungrouped: [] }, { groups: [{ id: 1, name: 'G' }], ungrouped: [] },
     { groups: [], ungrouped: [{ ...home, id: 'x' }] }, { groups: [], ungrouped: [{ ...home, name: ' ' }] },
     { groups: [], ungrouped: [{ ...home, icon: 4 }] }, { groups: [], ungrouped: [null] },
+    { groups: [], ungrouped: [] }, { revision: -1, groups: [], ungrouped: [] }, { revision: '1', groups: [], ungrouped: [] },
   ];
   for (const value of invalid) assert.throws(() => parseCatalog(value, base));
 });
 
 test('app destinations must be absolute HTTP(S) URLs without embedded credentials', () => {
   for (const url of ['javascript:alert(1)', 'data:text/html,hello', '/relative', 'https://user:secret@photos.example.test']) {
-    assert.throws(() => parseCatalog({ groups: [], ungrouped: [{ ...home, url }] }, base));
+    assert.throws(() => parseCatalog({ revision: 0, groups: [], ungrouped: [{ ...home, url }] }, base));
   }
 });
 
 test('icons must resolve to the dashboard origin', () => {
   for (const icon of ['https://other.example.test/icon.svg', '//other.example.test/icon.svg', 'data:image/svg+xml,test', 'javascript:alert(1)']) {
-    assert.throws(() => parseCatalog({ groups: [], ungrouped: [{ ...home, icon }] }, base));
+    assert.throws(() => parseCatalog({ revision: 0, groups: [], ungrouped: [{ ...home, icon }] }, base));
   }
 });
 
@@ -74,7 +76,7 @@ test('fetches and revalidates the catalog on every load', async () => {
     assert.equal(options?.cache, 'no-cache');
     assert.ok(options?.signal instanceof AbortSignal);
     calls += 1;
-    return new Response(JSON.stringify({ groups: [], ungrouped: [{ ...home, name: `App ${calls}` }] }));
+    return new Response(JSON.stringify({ revision: 0, groups: [], ungrouped: [{ ...home, name: `App ${calls}` }] }));
   };
   assert.equal((await loadCatalog(api, base, fetcher)).ungrouped[0]?.name, 'App 1');
   assert.equal((await loadCatalog(api, base, fetcher)).ungrouped[0]?.name, 'App 2');

@@ -130,7 +130,7 @@ export function createManager(host: ManagerHost) {
   async function commitLayout(layout: Layout, focus: string[] = []): Promise<void> {
     hideErrors();
     try {
-      host.setCatalog(await api.saveLayout(layout));
+      host.setCatalog(await api.saveLayout(layout, host.getCatalog().revision));
       focusFirst(...focus);
     } catch (error) {
       await recover(error, 'tree');

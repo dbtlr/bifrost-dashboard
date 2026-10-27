@@ -58,10 +58,14 @@ function appInput(value: unknown, partial: boolean): Partial<AppInput> {
   return result;
 }
 
-function layoutInput(value: unknown): Layout {
-  const body = object(value, ['groups', 'ungrouped']);
+function layoutInput(value: unknown): { layout: Layout; revision: number } {
+  const body = object(value, ['revision', 'groups', 'ungrouped']);
+  const { revision } = body;
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
+    badRequest('revision must be the nonnegative integer revision of the catalog the layout was based on.');
+  }
   if (!Array.isArray(body.groups) || !Array.isArray(body.ungrouped)) badRequest('groups and ungrouped must be arrays.');
-  return {
+  const layout: Layout = {
     groups: body.groups.map((value: unknown) => {
       const group = object(value, ['id', 'apps']);
       if (!Array.isArray(group.apps)) badRequest('Group apps must be an array.');
@@ -69,6 +73,7 @@ function layoutInput(value: unknown): Layout {
     }),
     ungrouped: body.ungrouped.map(id),
   };
+  return { layout, revision };
 }
 
 function readBody(request: IncomingMessage, limit: number): Promise<Buffer> {
@@ -177,7 +182,8 @@ export function createApiHandler({ store, dataDir }: { store: Store; dataDir: st
           json(response, groupId === null ? 201 : 200, groupId === null ? store.createGroup(name) : store.updateGroup(groupId, name));
         }
       } else {
-        json(response, 200, store.setLayout(layoutInput(await readJson(request))));
+        const { layout, revision } = layoutInput(await readJson(request));
+        json(response, 200, store.setLayout(layout, revision));
       }
     } catch (error) {
       if (error instanceof StoreError) {

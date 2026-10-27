@@ -51,6 +51,7 @@ All paths are relative to the dashboard's root. The examples use `http://127.0.0
 
 ```json
 {
+  "revision": 42,
   "groups": [
     { "id": 2, "name": "Media & files", "apps": [ { "id": 7, "name": "Immich", "url": "https://photos.example.com/", "icon": null, "groupId": 2 } ] }
   ],
@@ -60,7 +61,13 @@ All paths are relative to the dashboard's root. The examples use `http://127.0.0
 }
 ```
 
-`groups` is in display order, and so is each `apps` array and `ungrouped`.
+| Field | Type | Notes |
+| --- | --- | --- |
+| `revision` | integer | Increases by one with every successful change to any app, group, icon, or layout. `PUT /api/layout` must send the revision of the catalog it was based on. |
+| `groups` | Group array | In display order. |
+| `ungrouped` | App array | In display order. |
+
+Each `apps` array is also in display order.
 
 ### Errors
 
@@ -75,7 +82,7 @@ Failed requests return a JSON body with a readable message:
 | `400` | The body is not valid JSON, has an unknown field, or has an invalid value. |
 | `404` | The route, app, or group does not exist, or a path ID is not a positive safe integer. |
 | `405` | The method is not allowed for the route. The `Allow` header lists supported methods. |
-| `409` | A group with that name already exists, or a layout does not match the current apps and groups. |
+| `409` | A group with that name already exists, or a layout's `revision` is not the current revision or its IDs do not match the current apps and groups. Nothing was changed. |
 | `413` | The body is too large. JSON bodies are limited to 64 KiB, and icons to 1 MiB. |
 | `415` | The icon has an unsupported content type, or a JSON endpoint has a missing or non-JSON content type. |
 
@@ -172,15 +179,28 @@ Removing a group never removes apps. Its apps move to the end of the ungrouped l
 
 ### Reorder everything
 
-`PUT /api/layout` sets the order of groups, the order of apps, and each app's group in one atomic step. The body lists every existing group exactly once and every existing app exactly once:
+`PUT /api/layout` sets the order of groups, the order of apps, and each app's group in one atomic step. The body has three required fields:
+
+- `revision`: the `revision` of the Catalog the layout was built from.
+- `groups`: every existing group exactly once, each with its apps in order.
+- `ungrouped`: the ungrouped apps in order.
+
+Every existing app appears exactly once across `groups` and `ungrouped`.
 
 ```sh
 curl -s -X PUT http://127.0.0.1:4310/api/layout \
   -H 'Content-Type: application/json' \
-  -d '{"groups": [{"id": 3, "apps": [12, 7]}, {"id": 2, "apps": []}], "ungrouped": [9]}'
+  -d '{"revision": 42, "groups": [{"id": 3, "apps": [12, 7]}, {"id": 2, "apps": []}], "ungrouped": [9]}'
 ```
 
-The response is the new Catalog. If the body names a nonexistent app or group, leaves one out, or repeats an ID, the server changes nothing and returns `409`. A stale layout can conflict when another client changes the catalog. Read the catalog again, then retry.
+The response is the new Catalog, with the new revision. A missing or invalid `revision` returns `400`.
+
+The server changes nothing and returns `409` in these cases:
+
+- `revision` is not the current revision. Another change was made after the catalog was read, for example a reorder or a group change by another client. The error is `The catalog changed since it was read. Read it again and retry.`
+- The body names a nonexistent app or group, leaves one out, or repeats an ID.
+
+After a `409`, read the catalog again, rebuild the layout from it, and retry. The revision check keeps a layout built from an old catalog from silently undoing changes it never saw. Other endpoints do not take a revision; the last write to a field wins.
 
 To move a single app between groups without listing the whole layout, use `PATCH /api/apps/{id}` with a new `groupId`.
 
@@ -192,6 +212,9 @@ A tool that manages apps can make the dashboard match its own list:
 2. For each desired app that is missing, `POST /api/apps`. For each app whose name or group differs, `PATCH /api/apps/{id}`.
 3. Upload icons with `PUT /api/apps/{id}/icon` for apps that are new or whose icon changed.
 4. `DELETE /api/apps/{id}` for each app the tool manages that should no longer exist.
+5. To set an exact order, read `GET /api/catalog` again, build the layout from that response, and send it with that response's `revision` to `PUT /api/layout`. On `409`, repeat this step.
+
+Steps 2 to 4 need no revision. Each one changes the revision, so build a layout only after them.
 
 Only remove apps the tool created, for example by tracking their IDs or URLs. People can also add apps through the dashboard.
 
@@ -199,7 +222,7 @@ Only remove apps the tool created, for example by tracking their IDs or URLs. Pe
 
 The server keeps its state in the data directory, set by `BIFROST_DATA_DIR`. Relative paths resolve from the application root in both production and development:
 
-- `bifrost.sqlite`: the database.
+- `bifrost.sqlite`: the database. Opening a database from an earlier version upgrades its schema in place and keeps its data.
 - `icons/`: uploaded icons, served at `/icons/`.
 
 When the server creates a new database and the data directory contains a legacy `apps.json`, it imports those apps once, ungrouped and in alphabetical order. A leading UTF-8 BOM is accepted. Legacy icon URLs are resolved against the catalog location. An icon is kept only when its resolved path names one existing file directly under `icons/`, regardless of the URL's origin. Other icon paths are discarded.

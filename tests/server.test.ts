@@ -137,9 +137,9 @@ test('built files and live data are served independently without restart', async
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type') ?? '', /application\/json/);
     assert.equal(response.headers.get('cache-control'), 'no-cache');
-    assert.deepEqual(await response.json(), { groups: [], ungrouped: [] });
+    assert.deepEqual(await response.json(), { revision: 0, groups: [], ungrouped: [] });
     await writeFile(join(dataDir, 'apps.json'), '{"apps":[{"name":"Ignored later","url":"https://ignored.test"}]}');
-    assert.deepEqual(await (await fetch(`${url}/api/catalog`)).json(), { groups: [], ungrouped: [] });
+    assert.deepEqual(await (await fetch(`${url}/api/catalog`)).json(), { revision: 0, groups: [], ungrouped: [] });
     assert.deepEqual(await (await fetch(`${url}/apps.json`)).json(), { apps: [{ name: 'Bundled sample' }] });
     await rm(join(buildDir, 'apps.json'));
     assert.equal((await fetch(`${url}/apps.json`)).status, 404);

@@ -18,6 +18,7 @@ export interface Group {
 }
 
 export interface Catalog {
+  revision: number;
   groups: Group[];
   ungrouped: StoredApp[];
 }
@@ -102,6 +103,13 @@ export function openStore(dataDir: string) {
     }
   }
 
+  // Version 2 adds the catalog revision that layout writes must match.
+  const revisionSchema = `
+    CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL);
+    INSERT INTO meta (id, revision) VALUES (1, 0);
+    PRAGMA user_version = 2;
+  `;
+
   try {
     const version = db.prepare('PRAGMA user_version').get()?.user_version;
     if (version === 0) {
@@ -113,18 +121,31 @@ export function openStore(dataDir: string) {
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, url TEXT NOT NULL, icon TEXT,
             group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL, position INTEGER NOT NULL
           );
-          PRAGMA user_version = 1;
+          ${revisionSchema}
         `);
         const apps = legacyApps(dataDir);
         const insert = db.prepare('INSERT INTO apps (name, url, icon, group_id, position) VALUES (?, ?, ?, NULL, ?)');
         apps.forEach((app, index) => insert.run(app.name, app.url, app.icon, index));
       });
-    } else if (version !== 1) {
+    } else if (version === 1) {
+      transaction(() => db.exec(revisionSchema));
+    } else if (version !== 2) {
       throw new Error(`Unsupported database schema version: ${version}`);
     }
   } catch (error) {
     db.close();
     throw error;
+  }
+
+  function revision(): number {
+    const row = db.prepare('SELECT revision FROM meta WHERE id = 1').get();
+    if (typeof row?.revision !== 'number') throw new Error('Invalid catalog revision in database.');
+    return row.revision;
+  }
+
+  // Every successful change calls this inside its transaction, so a revision names one exact catalog.
+  function bumpRevision(): void {
+    db.prepare('UPDATE meta SET revision = revision + 1 WHERE id = 1').run();
   }
 
   function catalog(): Catalog {
@@ -133,7 +154,7 @@ export function openStore(dataDir: string) {
       if (typeof row.id !== 'number' || typeof row.name !== 'string') throw new Error('Invalid group row in database.');
       return { id: row.id, name: row.name, apps: apps.filter(app => app.groupId === row.id) };
     });
-    return { groups, ungrouped: apps.filter(app => app.groupId === null) };
+    return { revision: revision(), groups, ungrouped: apps.filter(app => app.groupId === null) };
   }
 
   function getApp(id: number): StoredApp {
@@ -143,8 +164,12 @@ export function openStore(dataDir: string) {
   }
 
   function deleteApp(id: number): void {
-    const app = getApp(id);
-    db.prepare('DELETE FROM apps WHERE id = ?').run(id);
+    const app = transaction(() => {
+      const app = getApp(id);
+      db.prepare('DELETE FROM apps WHERE id = ?').run(id);
+      bumpRevision();
+      return app;
+    });
     removeUnusedIcon(app.icon);
   }
 
@@ -155,10 +180,14 @@ export function openStore(dataDir: string) {
   }
 
   function setIcon(id: number, icon: string | null): StoredApp {
-    const app = getApp(id);
-    db.prepare('UPDATE apps SET icon = ? WHERE id = ?').run(icon, id);
-    removeUnusedIcon(app.icon);
-    return getApp(id);
+    const [previous, updated] = transaction(() => {
+      const previous = getApp(id);
+      db.prepare('UPDATE apps SET icon = ? WHERE id = ?').run(icon, id);
+      bumpRevision();
+      return [previous, getApp(id)];
+    });
+    removeUnusedIcon(previous.icon);
+    return updated;
   }
 
   function getGroup(id: number): Group {
@@ -179,6 +208,7 @@ export function openStore(dataDir: string) {
       if (input.groupId !== null) getGroup(input.groupId);
       const result = db.prepare('INSERT INTO apps (name, url, group_id, position) VALUES (?, ?, ?, ?)')
         .run(name, input.url, input.groupId, nextPosition(input.groupId));
+      bumpRevision();
       return getApp(Number(result.lastInsertRowid));
     });
   }
@@ -194,6 +224,7 @@ export function openStore(dataDir: string) {
         db.prepare('UPDATE apps SET group_id = ?, position = ? WHERE id = ?').run(groupId, nextPosition(groupId), id);
       }
       db.prepare('UPDATE apps SET name = ?, url = ? WHERE id = ?').run(name, url, id);
+      bumpRevision();
       return getApp(id);
     });
   }
@@ -211,6 +242,7 @@ export function openStore(dataDir: string) {
     return transaction(() => {
       const normalized = uniqueGroupName(name);
       const result = db.prepare('INSERT INTO groups (name, position) SELECT ?, COALESCE(MAX(position), -1) + 1 FROM groups').run(normalized);
+      bumpRevision();
       return getGroup(Number(result.lastInsertRowid));
     });
   }
@@ -219,6 +251,7 @@ export function openStore(dataDir: string) {
     return transaction(() => {
       getGroup(id);
       db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(uniqueGroupName(name, id), id);
+      bumpRevision();
       return getGroup(id);
     });
   }
@@ -230,11 +263,16 @@ export function openStore(dataDir: string) {
       const move = db.prepare('UPDATE apps SET group_id = NULL, position = ? WHERE id = ?');
       group.apps.forEach((app, index) => move.run(position + index, app.id));
       db.prepare('DELETE FROM groups WHERE id = ?').run(id);
+      bumpRevision();
     });
   }
 
-  function setLayout(layout: Layout): Catalog {
+  // The layout must be based on the current revision, so it cannot undo changes the caller never saw.
+  function setLayout(layout: Layout, expectedRevision: number): Catalog {
     return transaction(() => {
+      if (expectedRevision !== revision()) {
+        throw new StoreError(409, 'The catalog changed since it was read. Read it again and retry.');
+      }
       const current = catalog();
       const groupIds = layout.groups.map(group => group.id);
       const appIds = [...layout.ungrouped, ...layout.groups.flatMap(group => group.apps)];
@@ -250,6 +288,7 @@ export function openStore(dataDir: string) {
         group.apps.forEach((id, position) => move.run(group.id, position, id));
       });
       layout.ungrouped.forEach((id, position) => move.run(null, position, id));
+      bumpRevision();
       return catalog();
     });
   }

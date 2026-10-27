@@ -32,7 +32,7 @@ Icon paths from the API are relative to the dashboard root and resolve against t
 
 Use the [catalog management API](docs/api.md) to add, change, reorder, and remove apps and groups. Upload icons through the API. It names icons by content hash and removes files when no app references them. All API responses use `Cache-Control: no-cache`.
 
-Automation reads `/api/catalog` and updates individual resources through the API. Writing `apps.json` after the initial import has no effect. Back up the data directory while the service is stopped.
+Automation reads `/api/catalog` and updates individual resources through the API. The catalog carries a revision that increases with every change. A layout write must send the revision it was built from and is rejected with `409` if another change came first, so a reorder never silently undoes edits it didn't see. Writing `apps.json` after the initial import has no effect. Back up the data directory while the service is stopped.
 
 ## Build and hosting
 

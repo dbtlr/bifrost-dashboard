@@ -16,6 +16,7 @@ export interface Group {
 }
 
 export interface Catalog {
+  revision: number;
   groups: Group[];
   ungrouped: App[];
 }
@@ -53,6 +54,10 @@ export function parseCatalog(value: unknown, baseUrl: string): Catalog {
   if (!isRecord(value) || !Array.isArray(value.groups)) {
     throw new Error('The catalog must contain a groups array and an ungrouped array.');
   }
+  const { revision } = value;
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error('The catalog revision must be a nonnegative integer.');
+  }
   const base = requireWebUrl(baseUrl);
   const groups = value.groups.map((entry: unknown, index: number): Group => {
     if (!isRecord(entry)) throw new Error(`Group ${index + 1} must be an object.`);
@@ -62,7 +67,7 @@ export function parseCatalog(value: unknown, baseUrl: string): Catalog {
       apps: parseApps(entry.apps, base, `Group ${index + 1} app`),
     };
   });
-  return { groups, ungrouped: parseApps(value.ungrouped, base, 'Ungrouped app') };
+  return { revision, groups, ungrouped: parseApps(value.ungrouped, base, 'Ungrouped app') };
 }
 
 export async function loadCatalog(apiUrl: string, baseUrl: string, fetcher: typeof fetch = fetch): Promise<Catalog> {
@@ -83,6 +88,7 @@ export function filterCatalog(catalog: Catalog, query: string): Catalog {
   const normalized = query.trim().toLocaleLowerCase();
   const matches = (app: App): boolean => `${app.name} ${app.domain}`.toLocaleLowerCase().includes(normalized);
   return {
+    revision: catalog.revision,
     groups: catalog.groups
       .map(group => ({ ...group, apps: group.apps.filter(matches) }))
       .filter(group => group.apps.length > 0),

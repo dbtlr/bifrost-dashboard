@@ -22,7 +22,7 @@ const retry = element<HTMLButtonElement>('retry');
 const manageOpen = element<HTMLButtonElement>('manage-open');
 const manageDialog = element<HTMLDialogElement>('manage');
 const source = document.querySelector<HTMLMetaElement>('meta[name="apps-source"]')?.content || './api/catalog';
-let catalog: Catalog = { groups: [], ungrouped: [] };
+let catalog: Catalog = { revision: 0, groups: [], ungrouped: [] };
 
 function countLabel(count: number): string {
   return `${count} ${count === 1 ? 'app' : 'apps'}`;

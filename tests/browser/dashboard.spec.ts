@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures.ts';
 
-const empty = { groups: [], ungrouped: [] };
+const empty = { revision: 0, groups: [], ungrouped: [] };
 const app = (id: number, name: string, url: string, extra: Record<string, unknown> = {}) => ({ id, name, url, icon: null, groupId: null, ...extra });
 
 test('apps appear in the user’s groups and order; names and domains are searchable', async ({ page, api }) => {
@@ -78,6 +78,7 @@ test('missing icons fall back to initials and catalog text is never treated as H
   const group = '<b>Bold group</b>';
   await page.route('**/api/catalog', route => route.fulfill({
     json: {
+      revision: 0,
       groups: [{ id: 1, name: group, apps: [app(1, 'Home Assistant', 'https://home.example.test/', { groupId: 1 })] }],
       ungrouped: [app(2, name, 'https://safe.example.test/', { icon: 'icons/missing.svg' })],
     },
@@ -95,7 +96,7 @@ test('missing icons fall back to initials and catalog text is never treated as H
 test('long names and domains fit narrow screens with readable text and large targets', async ({ page }) => {
   const long = app(3, 'A very long application name with several words', 'https://an-extremely-long-app-domain.internal.example.test/');
   await page.route('**/api/catalog', route => route.fulfill({
-    json: { groups: [{ id: 1, name: 'A group with quite a long name indeed', apps: [app(1, 'Home Assistant', 'https://home.example.test/', { groupId: 1 })] }], ungrouped: [app(2, 'Immich', 'https://photos.example.test/'), long] },
+    json: { revision: 0, groups: [{ id: 1, name: 'A group with quite a long name indeed', apps: [app(1, 'Home Assistant', 'https://home.example.test/', { groupId: 1 })] }], ungrouped: [app(2, 'Immich', 'https://photos.example.test/'), long] },
   }));
   await page.goto('/');
   await expect(page.locator('.app-link')).toHaveCount(3);
