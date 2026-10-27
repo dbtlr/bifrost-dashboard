@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { countApps, filterCatalog, loadCatalog, parseCatalog } from '../src/catalog.ts';
+import { countApps, createCatalogSequence, filterCatalog, parseCatalog } from '../src/catalog.ts';
+import type { Catalog } from '../src/catalog.ts';
 
 const base = 'https://dashboard.example.test/';
-const api = 'https://dashboard.example.test/api/catalog';
 const immich = { id: 7, name: 'Immich', url: 'https://photos.example.test', icon: 'icons/immich.svg', groupId: 2 };
 const home = { id: 9, name: ' Home Assistant ', url: 'http://home.example.test:8123', icon: null, groupId: null };
 const sample = { revision: 3, groups: [{ id: 2, name: 'Media', apps: [immich] }, { id: 3, name: 'Empty', apps: [] }], ungrouped: [home] };
@@ -69,21 +69,27 @@ test('the launcher view omits empty groups even without a query', () => {
   assert.deepEqual(filterCatalog(parseCatalog(sample, base), '').groups.map(group => group.name), ['Media']);
 });
 
-test('fetches and revalidates the catalog on every load', async () => {
-  let calls = 0;
-  const fetcher: typeof fetch = async (url, options) => {
-    assert.equal(String(url), api);
-    assert.equal(options?.cache, 'no-cache');
-    assert.ok(options?.signal instanceof AbortSignal);
-    calls += 1;
-    return new Response(JSON.stringify({ revision: 0, groups: [], ungrouped: [{ ...home, name: `App ${calls}` }] }));
-  };
-  assert.equal((await loadCatalog(api, base, fetcher)).ungrouped[0]?.name, 'App 1');
-  assert.equal((await loadCatalog(api, base, fetcher)).ungrouped[0]?.name, 'App 2');
+test('search matches the name or the domain, never text spanning the two', () => {
+  const catalog = parseCatalog(sample, base);
+  assert.equal(countApps(filterCatalog(catalog, 't h')), 0);
+  assert.equal(countApps(filterCatalog(catalog, 'assistant home')), 0);
+  assert.deepEqual(filterCatalog(catalog, 'home.example').ungrouped.map(app => app.name), ['Home Assistant']);
+  assert.deepEqual(filterCatalog(catalog, 'photos.example').groups[0]?.apps.map(app => app.name), ['Immich']);
 });
 
-test('rejects failed responses, malformed JSON, and network failures', async () => {
-  await assert.rejects(loadCatalog(api, base, async () => new Response('Not found', { status: 404 })), /404/);
-  await assert.rejects(loadCatalog(api, base, async () => new Response('{unfinished')));
-  await assert.rejects(loadCatalog(api, base, async () => { throw new TypeError('Network unavailable'); }), /Network unavailable/);
+test('a catalog request that started before the newest applied one is dropped', async () => {
+  const applied: number[] = [];
+  const track = createCatalogSequence(catalog => applied.push(catalog.revision));
+  const pending: ((catalog: Catalog) => void)[] = [];
+  const request = () => new Promise<Catalog>(resolve => pending.push(resolve));
+  const older = track(request);
+  const newer = track(request);
+  pending[1]!({ revision: 2, groups: [], ungrouped: [] });
+  assert.equal(await newer, true);
+  pending[0]!({ revision: 1, groups: [], ungrouped: [] });
+  assert.equal(await older, false);
+  assert.equal(await track(async () => ({ revision: 3, groups: [], ungrouped: [] })), true);
+  assert.deepEqual(applied, [2, 3]);
+  await assert.rejects(track(async () => { throw new Error('offline'); }), /offline/);
+  assert.deepEqual(applied, [2, 3]);
 });

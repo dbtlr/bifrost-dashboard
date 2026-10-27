@@ -1,4 +1,5 @@
-import { countApps, filterCatalog, loadCatalog } from './catalog.ts';
+import { getCatalog } from './api.ts';
+import { countApps, createCatalogSequence, filterCatalog } from './catalog.ts';
 import type { App, Catalog } from './catalog.ts';
 import { createIcon } from './icon.ts';
 import { createManager } from './manage.ts';
@@ -21,7 +22,6 @@ const messageDetail = element('message-detail');
 const retry = element<HTMLButtonElement>('retry');
 const manageOpen = element<HTMLButtonElement>('manage-open');
 const manageDialog = element<HTMLDialogElement>('manage');
-const source = document.querySelector<HTMLMetaElement>('meta[name="apps-source"]')?.content || './api/catalog';
 let catalog: Catalog = { revision: 0, groups: [], ungrouped: [] };
 
 function countLabel(count: number): string {
@@ -110,13 +110,12 @@ function setCatalog(next: Catalog): void {
   manager.update();
 }
 
-const reload = (): Promise<Catalog> => loadCatalog(new URL(source, document.baseURI).href, document.baseURI);
+const applyCatalog = createCatalogSequence(setCatalog);
 const manager = createManager({
   dialog: manageDialog,
   trigger: manageOpen,
   getCatalog: () => catalog,
-  setCatalog,
-  reload,
+  applyCatalog,
 });
 
 async function refreshApps(): Promise<void> {
@@ -125,7 +124,7 @@ async function refreshApps(): Promise<void> {
   retry.disabled = true;
   showMessage('Loading apps…');
   try {
-    setCatalog(await reload());
+    await applyCatalog(getCatalog);
   } catch (error) {
     console.error('Unable to load the app catalog:', error);
     showMessage('Couldn’t load your apps.', 'Please try again in a moment.', true);

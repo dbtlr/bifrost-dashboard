@@ -28,7 +28,7 @@ function requireId(value: unknown, label: string): number {
   return value;
 }
 
-function parseApp(entry: unknown, base: URL, label: string): App {
+export function parseApp(entry: unknown, base: URL, label: string): App {
   if (!isRecord(entry)) throw new Error(`${label} must be an object.`);
   const url = new URL(requireAppUrl(entry.url));
   const groupId = entry.groupId === null || entry.groupId === undefined ? null : requireId(entry.groupId, `${label} group`);
@@ -70,13 +70,19 @@ export function parseCatalog(value: unknown, baseUrl: string): Catalog {
   return { revision, groups, ungrouped: parseApps(value.ungrouped, base, 'Ungrouped app') };
 }
 
-export async function loadCatalog(apiUrl: string, baseUrl: string, fetcher: typeof fetch = fetch): Promise<Catalog> {
-  const response = await fetcher(apiUrl, {
-    cache: 'no-cache',
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new Error(`Catalog request failed (${response.status}).`);
-  return parseCatalog(await response.json(), baseUrl);
+// Applies catalogs in the order their requests started. A response whose request started before the
+// newest applied one is stale and dropped, so a slow reply can never replace newer state.
+export function createCatalogSequence(apply: (catalog: Catalog) => void) {
+  let started = 0;
+  let applied = 0;
+  return async (request: () => Promise<Catalog>): Promise<boolean> => {
+    const ticket = ++started;
+    const catalog = await request();
+    if (ticket < applied) return false;
+    applied = ticket;
+    apply(catalog);
+    return true;
+  };
 }
 
 export function countApps(catalog: Catalog): number {
@@ -86,7 +92,7 @@ export function countApps(catalog: Catalog): number {
 // What the launcher shows: apps matching the query, and no group that has none (empty groups included).
 export function filterCatalog(catalog: Catalog, query: string): Catalog {
   const normalized = query.trim().toLocaleLowerCase();
-  const matches = (app: App): boolean => `${app.name} ${app.domain}`.toLocaleLowerCase().includes(normalized);
+  const matches = (app: App): boolean => [app.name, app.domain].some(text => text.toLocaleLowerCase().includes(normalized));
   return {
     revision: catalog.revision,
     groups: catalog.groups

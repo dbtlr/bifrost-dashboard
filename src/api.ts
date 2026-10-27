@@ -1,5 +1,5 @@
-import { parseCatalog } from './catalog.ts';
-import type { Catalog } from './catalog.ts';
+import { parseApp, parseCatalog } from './catalog.ts';
+import type { App, Catalog } from './catalog.ts';
 
 export interface Layout {
   groups: { id: number; apps: number[] }[];
@@ -22,19 +22,27 @@ export class ApiError extends Error {
   }
 }
 
+interface SendOptions {
+  body?: BodyInit;
+  contentType?: string;
+  cache?: RequestCache;
+  timeout?: number;
+}
+
 function endpoint(path: string): string {
   return new URL(`api/${path}`, document.baseURI).href;
 }
 
-async function send(method: string, path: string, body?: BodyInit, contentType?: string): Promise<unknown> {
+// Every API call goes through here. Paths are relative to the dashboard root, like icon paths.
+async function send(method: string, path: string, { body, contentType, cache = 'no-store', timeout = 30_000 }: SendOptions = {}): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(endpoint(path), {
       method,
       body,
       headers: contentType ? { 'Content-Type': contentType } : undefined,
-      cache: 'no-store',
-      signal: AbortSignal.timeout(30_000),
+      cache,
+      signal: AbortSignal.timeout(timeout),
     });
   } catch {
     throw new ApiError(0, 'Couldn’t reach the dashboard. Check your connection and try again.');
@@ -50,12 +58,19 @@ async function send(method: string, path: string, body?: BodyInit, contentType?:
   return payload;
 }
 
-const sendJson = (method: string, path: string, value: unknown) => send(method, path, JSON.stringify(value), 'application/json');
+const sendJson = (method: string, path: string, value: unknown) => send(method, path, { body: JSON.stringify(value), contentType: 'application/json' });
 
-export const createApp = (fields: Required<AppFields>) => sendJson('POST', 'apps', fields) as Promise<{ id: number }>;
+// The launcher reads on every load, so it revalidates and gives up sooner than writes do.
+export async function getCatalog(): Promise<Catalog> {
+  return parseCatalog(await send('GET', 'catalog', { cache: 'no-cache', timeout: 10_000 }), document.baseURI);
+}
+
+export async function createApp(fields: Required<AppFields>): Promise<App> {
+  return parseApp(await sendJson('POST', 'apps', fields), new URL(document.baseURI), 'The new app');
+}
 export const updateApp = (id: number, fields: AppFields) => sendJson('PATCH', `apps/${id}`, fields);
 export const deleteApp = (id: number) => send('DELETE', `apps/${id}`);
-export const uploadIcon = (id: number, file: Blob) => send('PUT', `apps/${id}/icon`, file, file.type || 'application/octet-stream');
+export const uploadIcon = (id: number, file: Blob) => send('PUT', `apps/${id}/icon`, { body: file, contentType: file.type || 'application/octet-stream' });
 export const removeIcon = (id: number) => send('DELETE', `apps/${id}/icon`);
 export const createGroup = (name: string) => sendJson('POST', 'groups', { name });
 export const renameGroup = (id: number, name: string) => sendJson('PATCH', `groups/${id}`, { name });

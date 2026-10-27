@@ -63,7 +63,7 @@ h1 { font-size: 44px; line-height: 1.1; letter-spacing: -1.8px; font-weight: 550
 kbd { font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); }
 
 .section-line { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 17px; margin-bottom: 22px; }
-.section-line h2 { margin: 0; font-size: 12px; font-weight: 500; letter-spacing: .1px; }
+.section-line h2 { min-width: 0; margin: 0; font-size: 12px; font-weight: 500; letter-spacing: .1px; overflow-wrap: anywhere; }
 .section-line span { font-size: 11px; color: var(--muted); }
 .launcher-section + .launcher-section { margin-top: 18px; }
 .app-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px 8px; list-style: none; padding: 0; margin: 12px -14px 25px; }
@@ -192,7 +192,8 @@ kbd { font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; color: var(-
   .form-back { display: inline-flex; align-items: center; }
   .form-cancel { display: none; }
   .m-group-head { min-height: 48px; }
-  .grip { width: 44px; height: 44px; }
+  /* A 44px touch target around the same small grip as on desktop. */
+  .grip { width: 44px; height: 44px; padding: 15px 18px; }
   .m-group-actions button { min-width: 44px; min-height: 44px; }
   .m-app, .m-app-name { min-height: 44px; }
   .m-app-remove { min-width: 44px; min-height: 44px; }
