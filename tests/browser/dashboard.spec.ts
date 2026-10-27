@@ -29,10 +29,15 @@ test('apps appear in the user’s groups and order; names and domains are search
   await expect(sections).toHaveText(['Media · 1']);
   await searchbox.fill('vault');
   await expect(sections).toHaveText(['Everyday · 1']);
+  await searchbox.fill('home-assistant.example');
+  await expect(sections).toHaveText(['Everyday · 1']);
+  await expect(links).toHaveCount(1);
   await searchbox.fill('no match');
   await expect(page.getByText('No matching apps.')).toBeVisible();
   await searchbox.press('Escape');
   await expect(links).toHaveCount(5);
+  await expect(searchbox).toHaveValue('');
+  await expect(searchbox).not.toBeFocused();
 
   await api.addApp('New app');
   await page.reload();
@@ -91,25 +96,42 @@ test('missing icons fall back to initials and catalog text is never treated as H
   await expect(page.locator('.app-name img, h2 b')).toHaveCount(0);
   await expect(page.locator('.icon-fallback').filter({ hasText: 'HA' })).toBeVisible();
   await expect(page.locator('.app-link').filter({ hasText: name }).locator('.icon-fallback')).toBeVisible();
+
+  // The Manage tree, the edit form, and the group menu show the same text as text.
+  await page.getByRole('button', { name: 'Manage' }).click();
+  const manage = page.locator('#manage');
+  await expect(manage.locator('.m-app-name')).toHaveText(['Home Assistant', name]);
+  await expect(manage.locator('.m-group:not(.m-ungrouped) .m-group-name')).toHaveText([group]);
+  await expect(manage.getByRole('button', { name: `Remove ${name}` })).toBeVisible();
+  await manage.getByRole('button', { name: `Edit ${name}`, exact: true }).click();
+  await expect(manage.locator('form').getByLabel('Name', { exact: true })).toHaveValue(name);
+  await expect(manage.locator('form select option')).toHaveText(['Ungrouped', group]);
+  await expect(manage.locator('.m-app-name img, .m-group-name b, option b')).toHaveCount(0);
 });
 
 test('long names and domains fit narrow screens with readable text and large targets', async ({ page }) => {
+  const unbroken = 'G'.repeat(60);
   const long = app(3, 'A very long application name with several words', 'https://an-extremely-long-app-domain.internal.example.test/');
   await page.route('**/api/catalog', route => route.fulfill({
-    json: { revision: 0, groups: [{ id: 1, name: 'A group with quite a long name indeed', apps: [app(1, 'Home Assistant', 'https://home.example.test/', { groupId: 1 })] }], ungrouped: [app(2, 'Immich', 'https://photos.example.test/'), long] },
+    json: { revision: 0, groups: [
+      { id: 1, name: 'A group with quite a long name indeed', apps: [app(1, 'Home Assistant', 'https://home.example.test/', { groupId: 1 })] },
+      { id: 2, name: unbroken, apps: [app(4, 'Grafana', 'https://metrics.example.test/', { groupId: 2 })] },
+    ], ungrouped: [app(2, 'Immich', 'https://photos.example.test/'), long] },
   }));
   await page.goto('/');
-  await expect(page.locator('.app-link')).toHaveCount(3);
+  await expect(page.locator('.app-link')).toHaveCount(4);
   for (const width of [320, 390, 540, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     const layout = await page.evaluate(() => ({
       overflow: document.documentElement.scrollWidth > window.innerWidth,
+      headings: [...document.querySelectorAll('.section-line h2')].filter(heading => heading.scrollWidth > heading.clientWidth).length,
       domainSize: parseFloat(getComputedStyle(document.querySelector('.app-domain')!).fontSize),
       searchSize: parseFloat(getComputedStyle(document.querySelector('input')!).fontSize),
       manage: document.getElementById('manage-open')!.getBoundingClientRect().height,
       targets: [...document.querySelectorAll('.app-link')].map(link => ({ width: link.getBoundingClientRect().width, height: link.getBoundingClientRect().height })),
     }));
     expect(layout.overflow).toBe(false);
+    expect(layout.headings).toBe(0);
     expect(layout.domainSize).toBeGreaterThanOrEqual(11);
     expect(layout.searchSize).toBeGreaterThanOrEqual(16);
     expect(layout.manage).toBeGreaterThanOrEqual(44);

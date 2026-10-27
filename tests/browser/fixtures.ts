@@ -16,6 +16,8 @@ export function sampleIcon(name: string): string {
 }
 
 interface Item { id: number; name: string }
+interface CatalogApp extends Item { icon: string | null; groupId: number | null }
+export interface CatalogState { revision: number; groups: (Item & { apps: CatalogApp[] })[]; ungrouped: CatalogApp[] }
 
 // Talks to the test's own dashboard server the way an automation tool would.
 export class Api {
@@ -65,9 +67,51 @@ export class Api {
     await this.addApp('Miniflux');
   }
 
-  catalog(): Promise<{ groups: { name: string; apps: { name: string; icon: string | null }[] }[]; ungrouped: { name: string }[] }> {
+  catalog(): Promise<CatalogState> {
     return this.call('GET', 'catalog');
   }
+
+  async app(name: string): Promise<CatalogApp> {
+    const state = await this.catalog();
+    return [...state.ungrouped, ...state.groups.flatMap(group => group.apps)].find(app => app.name === name)!;
+  }
+
+  async group(name: string): Promise<Item> {
+    return (await this.catalog()).groups.find(group => group.name === name)!;
+  }
+
+  // Reorders the groups by name, as another client would, from a fresh read of the catalog.
+  async orderGroups(names: string[]): Promise<void> {
+    const state = await this.catalog();
+    const groups = names.map(name => state.groups.find(group => group.name === name)!);
+    await this.call('PUT', 'layout', {
+      revision: state.revision,
+      groups: groups.map(group => ({ id: group.id, apps: group.apps.map(app => app.id) })),
+      ungrouped: state.ungrouped.map(app => app.id),
+    });
+  }
+}
+
+// Holds the first matching API call for `ms`. 'response' lets the server apply it at once and delays only
+// the reply; 'request' delays its arrival at the server. `released` settles once the held call is passed on.
+export async function delayFirst(page: Page, path: string, method: string, hold: 'request' | 'response' = 'response', ms = 1500): Promise<{ released: Promise<void> }> {
+  let release!: () => void;
+  const released = new Promise<void>(resolve => { release = resolve; });
+  let first = true;
+  await page.route(url => new URL(url).pathname === `/api/${path}`, async route => {
+    if (route.request().method() !== method || !first) return route.fallback();
+    first = false;
+    if (hold === 'request') {
+      await new Promise(resolve => setTimeout(resolve, ms));
+      await route.continue();
+    } else {
+      const response = await route.fetch();
+      await new Promise(resolve => setTimeout(resolve, ms));
+      await route.fulfill({ response });
+    }
+    release();
+  });
+  return { released };
 }
 
 // Every test gets a fresh server and database, so tests never share state and can run in parallel.
