@@ -4,6 +4,8 @@ The dashboard stores its apps and groups in a SQLite database and exposes them t
 
 The API has no authentication. Anyone who can reach the dashboard can change it. Keep the listener on a local interface, and expose it only through a trusted reverse proxy or local network.
 
+This is a deliberate boundary for a single-user tool behind Caddy. Authentication and SVG or CSP hardening of uploaded icons are out of scope; reviews should not raise them. Cheap cross-site guards, such as requiring `Content-Type: application/json` on writes, are in scope.
+
 All paths are relative to the dashboard's root. The examples use `http://127.0.0.1:4310`, the default listener of `npm start`.
 
 ## Concepts
