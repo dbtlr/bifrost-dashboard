@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Bifrost · Design concepts</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="review-bar">
+    <span class="review-label">BIFROST <span>/</span> DESIGN STUDY</span>
+    <nav aria-label="Design concepts">
+      <a href="#launchpad" data-concept="launchpad">01 <span>Launchpad</span></a>
+      <a href="#collections" data-concept="collections">02 <span>Collections</span></a>
+      <a href="#directory" data-concept="directory">03 <span>Directory</span></a>
+    </nav>
+    <span class="sample-label">Sample apps</span>
+  </div>
+  <div class="site">
+    <header class="site-header">
+      <a class="brand" href="#launchpad" aria-label="Bifrost home">
+        <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 25V15a11 11 0 0 1 22 0v10M11 25V15a5 5 0 0 1 10 0v10M16 15v10" stroke="currentColor" stroke-width="2.5"/></svg>
+        <span>bifrost</span>
+      </a>
+      <span class="header-detail">Your corner of the internet<span class="header-count">12 apps</span></span>
+    </header>
+    <main id="main"></main>
+    <footer class="site-footer"><span>Bifrost proxy</span><span>Illustrative apps · example.test domains</span></footer>
+  </div>
+  <aside class="design-note" aria-label="About this concept">
+    <div><span class="note-number" id="note-number">01</span><strong id="note-title"></strong><span id="note-description"></span></div>
+    <span id="note-fit"></span>
+  </aside>
+  <script src="concepts.js"></script>
+</body>
+</html>

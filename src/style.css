@@ -1,0 +1,124 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  color: #fff;
+  background: #000;
+  --muted: #a0a0a8;
+  --line: #242427;
+  --accent: #c0c9ff;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+a { color: inherit; text-decoration: none; }
+button, input { font: inherit; }
+button, a, input { -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
+
+a:focus-visible, button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 5px;
+}
+
+.visually-hidden, .skip-link:not(:focus) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link:focus {
+  position: absolute;
+  top: 8px;
+  left: 16px;
+  padding: 12px;
+  background: #000;
+  z-index: 1;
+}
+
+.site { max-width: 1216px; padding: 0 48px; margin: auto; }
+.site-header { min-height: 116px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; font-size: 23px; font-weight: 650; letter-spacing: -.9px; }
+.brand svg { width: 29px; height: 29px; color: var(--accent); }
+.header-detail { display: flex; align-items: center; gap: 24px; font-size: 12px; color: var(--muted); }
+.header-count { border-left: 1px solid #343439; padding-left: 24px; color: #d1d1d5; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; white-space: nowrap; }
+.header-count:empty { display: none; }
+.heading-row { display: flex; align-items: center; justify-content: space-between; gap: 28px; margin: 34px 0; }
+h1 { font-size: 44px; line-height: 1.1; letter-spacing: -1.8px; font-weight: 550; margin: 0; }
+
+.search { display: flex; align-items: center; gap: 12px; width: 330px; min-height: 48px; border-bottom: 1px solid #4c4c51; padding: 12px 0; color: var(--muted); }
+.search svg { width: 17px; height: 17px; flex: none; }
+.search input { min-width: 0; width: 100%; padding: 0; background: none; border: 0; border-radius: 0; color: #fff; font-size: 16px; }
+.search input::placeholder { color: var(--muted); opacity: 1; }
+.search input:focus-visible { outline: none; }
+.search:focus-within { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 6px; }
+kbd { font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); }
+
+.section-line { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 17px; margin-bottom: 22px; }
+.section-line h2 { margin: 0; font-size: 12px; font-weight: 500; letter-spacing: .1px; }
+.section-line span { font-size: 11px; color: var(--muted); }
+#result-count { margin-left: 4px; }
+.app-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px 8px; list-style: none; padding: 0; margin: 12px -14px 25px; }
+.app-grid:empty { margin: 0; }
+.app-grid li { min-width: 0; }
+.app-link { position: relative; display: flex; flex-direction: column; align-items: center; height: 100%; min-height: 148px; padding: 22px 12px 26px; gap: 15px; text-align: center; }
+.app-icon { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: none; }
+.app-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.icon-fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--accent); font-size: 20px; font-weight: 600; }
+.app-name { max-width: 100%; font-size: 13px; line-height: 1.5; font-weight: 550; letter-spacing: .05px; overflow-wrap: anywhere; }
+.app-domain { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: -9px; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted); letter-spacing: -.15px; }
+.app-arrow { position: absolute; right: 14px; top: 18px; font-size: 18px; color: var(--muted); opacity: 0; }
+.app-link:focus-visible { background: #0c0c0f; }
+.app-link:focus-visible .app-arrow { opacity: 1; }
+@media (hover: hover) {
+  .app-link:hover { background: #0c0c0f; }
+  .app-link:hover .app-arrow { opacity: 1; }
+}
+
+.message { padding: 55px 0 65px; text-align: center; }
+.message p { margin: 0; font-size: 14px; line-height: 1.6; }
+.message .message-detail { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.message button { min-height: 44px; padding: 8px 18px; margin-top: 18px; color: var(--accent); background: none; border: 1px solid #454554; border-radius: 0; cursor: pointer; font-size: 13px; }
+.message button:disabled { color: var(--muted); cursor: default; }
+.noscript-message { color: var(--muted); padding: 32px 0; }
+.site-footer { display: flex; justify-content: space-between; gap: 18px; border-top: 1px solid var(--line); padding: 21px 0; color: var(--muted); font-size: 11px; margin-top: 40px; }
+
+@media (min-width: 1400px) {
+  .site { padding-top: 20px; }
+  .heading-row { margin-top: 50px; }
+  .app-grid { row-gap: 26px; }
+  .site-footer { margin-top: 55px; }
+}
+
+@media (max-width: 1100px) {
+  .site { padding-right: 32px; padding-left: 32px; }
+  .app-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (max-width: 700px) {
+  .site { padding-right: 23px; padding-left: 23px; }
+  .site-header { min-height: 88px; }
+  .brand { font-size: 21px; }
+  .tagline { display: none; }
+  .header-count { padding: 0; border: 0; }
+  .heading-row { display: block; margin: 22px 0 30px; }
+  h1 { font-size: 35px; letter-spacing: -1.4px; }
+  .search { width: 100%; margin-top: 24px; }
+  .search kbd { display: none; }
+  .section-line { margin-bottom: 10px; }
+  .app-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 0; margin-right: -10px; margin-left: -10px; }
+  .app-link { padding: 23px 10px; gap: 13px; }
+  .app-name { font-size: 14px; }
+  .app-domain { margin-top: -7px; }
+  .site-footer { margin-top: 25px; font-size: 10px; }
+}
+
+@media (max-width: 479px) {
+  .app-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

@@ -1,0 +1,64 @@
+{
+  "apps": [
+    {
+      "name": "Code",
+      "url": "https://git.example.test",
+      "icon": "icons/git.svg"
+    },
+    {
+      "name": "Metrics",
+      "url": "https://metrics.example.test",
+      "icon": "icons/metrics.svg"
+    },
+    {
+      "name": "Home",
+      "url": "https://home.example.test",
+      "icon": "icons/home.svg"
+    },
+    {
+      "name": "Photos",
+      "url": "https://photos.example.test",
+      "icon": "icons/photos.svg"
+    },
+    {
+      "name": "Video",
+      "url": "https://watch.example.test",
+      "icon": "icons/watch.svg"
+    },
+    {
+      "name": "Bookmarks",
+      "url": "https://links.example.test",
+      "icon": "icons/links.svg"
+    },
+    {
+      "name": "Files",
+      "url": "https://cloud.example.test",
+      "icon": "icons/cloud.svg"
+    },
+    {
+      "name": "Documents",
+      "url": "https://docs.example.test",
+      "icon": "icons/docs.svg"
+    },
+    {
+      "name": "Containers",
+      "url": "https://containers.example.test",
+      "icon": "icons/containers.svg"
+    },
+    {
+      "name": "Sync",
+      "url": "https://sync.example.test",
+      "icon": "icons/sync.svg"
+    },
+    {
+      "name": "Status",
+      "url": "https://status.example.test",
+      "icon": "icons/status.svg"
+    },
+    {
+      "name": "Secrets",
+      "url": "https://vault.example.test",
+      "icon": "icons/vault.svg"
+    }
+  ]
+}
