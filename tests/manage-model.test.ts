@@ -49,7 +49,20 @@ test('an unsaved group choice is kept until the server moves the app to another 
   const rebased = rebaseDraft(draft, movedElsewhere);
   assert.equal(rebased.groupId, '');
   assert.equal(rebaseDraft({ ...rebased, groupId: '1' }, movedElsewhere).groupId, '1');
-  assert.deepEqual(draftFor('new-app'), { key: 'new-app', name: '', url: '', groupId: '', serverGroupId: '' });
+  assert.deepEqual(draftFor('new-app'), { key: 'new-app', name: '', url: '', groupId: '', server: { name: '', url: '', groupId: '' } });
+});
+
+test('a refresh takes the server value for every field the user has not touched, so saving cannot undo another change', () => {
+  const current = catalog.groups[0]!.apps[0]!;
+  const draft = { ...draftFor('app:10', current), name: 'Renamed here' };
+  const changedElsewhere = { ...current, url: 'https://moved.test/' };
+  const rebased = rebaseDraft(draft, changedElsewhere);
+  assert.equal(rebased.url, 'https://moved.test/', 'the untouched URL follows the server');
+  assert.equal(rebased.name, 'Renamed here', 'the edited name is kept');
+  assert.deepEqual(appChanges(changedElsewhere, { name: rebased.name, url: rebased.url, groupId: changedElsewhere.groupId }), { name: 'Renamed here' });
+
+  const editedUrl = rebaseDraft({ ...draftFor('app:10', current), url: 'https://typed.test/' }, changedElsewhere);
+  assert.equal(editedUrl.url, 'https://typed.test/', 'an edited URL is kept even when the server changed it');
 });
 
 test('only layout conflicts say the list now shows the current order', () => {

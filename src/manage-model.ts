@@ -47,25 +47,34 @@ export function appChanges(app: App, values: AppValues): AppFields {
 }
 
 // Unsaved form input. Group values are option values: '' for ungrouped, otherwise the group ID.
-// serverGroupId is the app's group when the draft last matched the server.
+// `server` holds each field as it was when the draft last matched the server.
 export interface Draft {
   key: string;
   name: string;
   url: string;
   groupId: string;
-  serverGroupId: string;
+  server: { name: string; url: string; groupId: string };
 }
 
 const groupValue = (app?: App): string => (app?.groupId == null ? '' : String(app.groupId));
+const serverValues = (app?: App) => ({ name: app?.name ?? '', url: app?.url ?? '', groupId: groupValue(app) });
 
 export function draftFor(key: string, app?: App): Draft {
-  return { key, name: app?.name ?? '', url: app?.url ?? '', groupId: groupValue(app), serverGroupId: groupValue(app) };
+  return { key, ...serverValues(app), server: serverValues(app) };
 }
 
-// Keeps the unsaved group choice unless the server has since moved the app to another group.
+// After a refresh: a name or URL the user has not touched takes the server's new value, so a save never
+// sends a stale value back over a change made elsewhere; an edited one is kept. The unsaved group choice
+// is kept unless the server has since moved the app to another group, as dragging it in the tree does.
 export function rebaseDraft(draft: Draft, app: App): Draft {
-  const current = groupValue(app);
-  return current === draft.serverGroupId ? draft : { ...draft, groupId: current, serverGroupId: current };
+  const server = serverValues(app);
+  return {
+    key: draft.key,
+    name: draft.name === draft.server.name ? server.name : draft.name,
+    url: draft.url === draft.server.url ? server.url : draft.url,
+    groupId: server.groupId === draft.server.groupId ? draft.groupId : server.groupId,
+    server,
+  };
 }
 
 // A rejected layout write is followed by a reload, so only then does the message point to the new order.

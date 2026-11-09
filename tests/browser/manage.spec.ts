@@ -135,6 +135,21 @@ test('a new app can bring its icon along', async ({ page, api }) => {
   expect((await api.catalog()).ungrouped).toHaveLength(1);
 });
 
+test('leaving the form while a new app is still being created keeps its icon', async ({ page, api }) => {
+  await openManage(page);
+  const { released: created } = await delayFirst(page, 'apps', 'POST', 'response', 800);
+  await manage(page).getByRole('button', { name: '+ App' }).click();
+  await field(page, 'Name').fill('Metrics');
+  await field(page, 'URL').fill('https://metrics.example.test');
+  await manage(page).locator('input[type=file]').setInputFiles(sampleIcon('metrics.svg'));
+  await manage(page).getByRole('button', { name: 'Save' }).click();
+  // Phones show Back instead of Cancel; both leave the form.
+  await manage(page).getByRole('button', { name: /^(Cancel|Back to apps and groups)$/ }).filter({ visible: true }).click();
+  await created;
+  await expect(page.locator('.app-link', { hasText: 'Metrics' }).locator('img')).toHaveAttribute('src', /\/icons\/.+\.svg$/);
+  await expect.poll(async () => (await api.catalog()).ungrouped[0]?.icon ?? null).not.toBeNull();
+});
+
 test('dragging an app into another group, including an empty one, persists after reload', async ({ page, api }) => {
   await api.seed();
   await openManage(page);

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isRecord, requireAppUrl, requireName } from '../src/app-rules.ts';
@@ -113,13 +113,26 @@ function writeIcon(dataDir: string, bytes: Buffer, extension: string): string {
   const existing = [...new Set(iconTypes.values())].find(type => existsSync(join(dataDir, 'icons', `${hash}.${type}`)));
   const file = `${hash}.${existing ?? extension}`;
   const target = join(dataDir, 'icons', file);
+  // Reuse trusts any file already at `target`, so its bytes must be on disk before the rename publishes it.
   if (!existsSync(target)) {
     const temporary = join(dataDir, 'icons', `.${randomUUID()}.tmp`);
     try {
-      writeFileSync(temporary, bytes, { flag: 'wx' });
+      const fd = openSync(temporary, 'wx');
+      try {
+        for (let offset = 0; offset < bytes.length;) offset += writeSync(fd, bytes, offset);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
       renameSync(temporary, target);
     } finally {
       rmSync(temporary, { force: true });
+    }
+    const directory = openSync(join(dataDir, 'icons'), 'r');
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
     }
   }
   return `icons/${file}`;

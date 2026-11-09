@@ -434,10 +434,12 @@ export function createManager(host: ManagerHost) {
           const changes = appChanges(app, values);
           if (Object.keys(changes).length > 0) await api.updateApp(app.id, changes);
         } else {
+          // Leaving the form while this runs clears pendingIcon, so keep the icon chosen at submit.
+          const icon = pendingIcon;
           createdId = (await api.createApp(values)).id;
-          if (pendingIcon) {
+          if (icon) {
             try {
-              await api.uploadIcon(createdId, pendingIcon);
+              await api.uploadIcon(createdId, icon);
             } catch (error) {
               // The app exists now, so the reload after this failure opens its edit form with the reason.
               form = { kind: 'app', id: createdId };
