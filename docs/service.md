@@ -68,7 +68,7 @@ The commands do not check the version of `BIFROST_NODE_BIN`. A Node.js that cann
 
 The unit hides `/home`, `/root`, `/run/user`, `/tmp`, and `/var/tmp` from the service. The release and `BIFROST_NODE_BIN`, with symbolic links resolved, must be outside them. The error names the resolved path.
 
-The release must not overlap the data directory. With `STATE` the last part of `BIFROST_DATA_DIR`, such as `bifrost-dashboard`, the resolved release must not be inside `/var/lib/STATE` or `/var/lib/private/STATE`, and must not contain either. systemd keeps a dynamic user's data in `/var/lib/private/STATE`, and the data directory may not exist yet, so the check compares against these fixed paths. It follows every symbolic link along them, including links to paths that do not exist yet, and applies `..` after the link before it is followed, as the kernel does. Otherwise the database would live in a disposable release, or the service could write release code.
+The release must not overlap the data directory. With `STATE` the last part of `BIFROST_DATA_DIR`, such as `bifrost-dashboard`, the resolved release must not be inside `/var/lib/STATE` or `/var/lib/private/STATE`, and must not contain either. systemd keeps a dynamic user's data in `/var/lib/private/STATE`, and the data directory may not exist yet, so the check compares against these fixed paths. It follows every symbolic link along them, including links to paths that do not exist yet, and applies each `..` to the resolved parent rather than to the text. A component that does not exist is treated as a plain directory, so links reached after it are still followed. Otherwise the database would live in a disposable release, or the service could write release code.
 
 ## The unit
 

@@ -282,6 +282,20 @@ test('a link whose target climbs with .. is followed before the .. applies', { s
   assert.match(result.stderr, /overlaps the data directory/);
 });
 
+test('a missing component followed by .. still leads to the links after it, and / contains every release', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await mkdir(join(f.release, 'nested'));
+  await mkdir(join(f.root, 'var/lib'), { recursive: true });
+  await symlink(join(f.release, 'nested'), join(f.root, 'var/lib/alias'));
+  await symlink('missing/../alias/../data', join(f.root, 'var/lib/bifrost-dashboard'));
+  assert.match(f.run('unit').stderr, /overlaps the data directory/);
+
+  const slash = await fixture(t);
+  await mkdir(join(slash.root, 'var/lib'), { recursive: true });
+  await symlink('/', join(slash.root, 'var/lib/bifrost-dashboard'));
+  assert.match(slash.run('unit').stderr, /overlaps the data directory/);
+});
+
 test('a release beside the data directory with a similar name is accepted', { skip: asRoot }, async t => {
   const f = await fixture(t, { releaseAt: ['root', 'var/lib/bifrost-dashboard-other/r1'] });
   const result = f.run('unit');

@@ -70,7 +70,7 @@ function isSafePath(path: string): boolean {
   return SAFE_PATH.test(path) && !path.split('/').some(part => part === '.' || part === '..');
 }
 
-const isInside = (path: string, parent: string): boolean => path === parent || path.startsWith(`${parent}/`);
+const isInside = (path: string, parent: string): boolean => parent === '/' || path === parent || path.startsWith(`${parent}/`);
 
 // Resolves every symbolic link along the path one component at a time, dangling links included, so a
 // path that does not exist yet still compares by where it will lead. `..` applies to the resolved parent,
@@ -91,7 +91,9 @@ function resolvePath(path: string): string {
     try {
       info = lstatSync(next);
     } catch {
-      return join(next, ...pending); // nothing below a missing component can be a link yet
+      // Missing: keep going as if it were a plain directory, so a later `..` can lead back to links.
+      current = next;
+      continue;
     }
     if (info.isSymbolicLink()) {
       if (++links > 40) throw new Failure(`Too many symbolic links while resolving ${path}.`);
