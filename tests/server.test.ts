@@ -1,15 +1,86 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
+import type { TestContext } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { createServer as createViteServer } from 'vite';
 import { createDashboardServer, readConfig } from '../server/server.ts';
+
+const appRoot = fileURLToPath(new URL('../', import.meta.url));
+
+async function devFixture(t: TestContext, { relativeDataDir = false, directory = 'data' } = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'bifrost-vite-'));
+  let server: Awaited<ReturnType<typeof createViteServer>> | undefined;
+  t.after(async () => {
+    await server?.close();
+    await rm(root, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  const dataDir = relativeDataDir ? await mkdtemp(join(appRoot, '.bifrost-vite-state-')) : join(root, directory);
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(join(root, 'sample'));
+  await writeFile(join(root, 'index.html'), '<h1>Development</h1>');
+  await writeFile(join(root, 'sample', 'apps.json'), '{"apps":[]}');
+  await writeFile(join(dataDir, 'apps.json'), '{"apps":[{"name":"Dev app","url":"https://dev.test"}]}');
+  const previous = process.env.BIFROST_DATA_DIR;
+  process.env.BIFROST_DATA_DIR = relativeDataDir ? relative(appRoot, dataDir) : dataDir;
+  try {
+    server = await createViteServer({
+      configFile: join(appRoot, 'vite.config.ts'), root,
+      logLevel: 'silent',
+      server: { host: '127.0.0.1', port: 0, hmr: false },
+    });
+  } finally {
+    if (previous === undefined) delete process.env.BIFROST_DATA_DIR;
+    else process.env.BIFROST_DATA_DIR = previous;
+  }
+  await server.listen();
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address !== 'string');
+  return { root, dataDir, base: `http://127.0.0.1:${address.port}` };
+}
+
+test('Vite dev serves the API but denies database, legacy data, and sample files', async t => {
+  const { base } = await devFixture(t);
+  for (const path of ['/data/bifrost.sqlite', '/data/apps.json', '/sample/apps.json']) {
+    const response = await fetch(base + path);
+    assert.ok([403, 404].includes(response.status), `${path}: ${response.status}`);
+  }
+  const response = await fetch(base + '/api/catalog');
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ungrouped[0].name, 'Dev app');
+});
+
+test('Vite and production resolve relative data directories from the application root', async t => {
+  const { base, dataDir } = await devFixture(t, { relativeDataDir: true });
+  const env = { BIFROST_DATA_DIR: relative(appRoot, dataDir) };
+  assert.equal(readConfig(env, appRoot).dataDir, dataDir);
+  const response = await fetch(base + '/api/catalog');
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ungrouped[0]?.name, 'Dev app');
+});
+
+test('Vite denies custom data directories through root and filesystem URLs', async t => {
+  const { base, dataDir } = await devFixture(t, { directory: 'private state' });
+  for (const path of [
+    '/private%20state/apps.json', '/private%20state/bifrost.sqlite',
+    `/@fs${dataDir}/apps.json`, `/@fs${dataDir}/bifrost.sqlite`,
+  ]) {
+    const response = await fetch(base + path);
+    assert.ok([403, 404].includes(response.status), `${path}: ${response.status}`);
+    await response.arrayBuffer();
+  }
+  assert.equal((await fetch(base + '/api/catalog')).status, 200);
+});
 
 test('runtime defaults use a fixed port separate from Vite and resolve paths from the app root', () => {
   assert.deepEqual(readConfig({}, '/example/dashboard'), {
     host: '127.0.0.1', port: 4310,
-    buildDir: '/example/dashboard/dist', dataDir: '/example/dashboard/public',
+    buildDir: '/example/dashboard/dist', dataDir: '/example/dashboard/data',
   });
   assert.deepEqual(readConfig({
     BIFROST_HOST: '0.0.0.0', BIFROST_PORT: '9123',
@@ -61,16 +132,17 @@ test('built files and live data are served independently without restart', async
     assert.equal(await head.text(), '');
   });
 
-  await t.test('serves the persistent catalog, not the build snapshot', async () => {
-    const response = await fetch(`${url}/apps.json`);
+  await t.test('serves the API catalog and treats apps.json as an ordinary build path', async () => {
+    const response = await fetch(`${url}/api/catalog`);
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type') ?? '', /application\/json/);
-    assert.match(response.headers.get('cache-control') ?? '', /no-cache/);
-    assert.deepEqual(await response.json(), { apps: [] });
-    const next = '{"apps":[{"name":"New app","url":"https://new.example.test"}]}';
-    await writeFile(join(dataDir, 'apps.next.json'), next);
-    await rename(join(dataDir, 'apps.next.json'), join(dataDir, 'apps.json'));
-    assert.equal(await (await fetch(`${url}/apps.json`)).text(), next);
+    assert.equal(response.headers.get('cache-control'), 'no-cache');
+    assert.deepEqual(await response.json(), { revision: 0, groups: [], ungrouped: [] });
+    await writeFile(join(dataDir, 'apps.json'), '{"apps":[{"name":"Ignored later","url":"https://ignored.test"}]}');
+    assert.deepEqual(await (await fetch(`${url}/api/catalog`)).json(), { revision: 0, groups: [], ungrouped: [] });
+    assert.deepEqual(await (await fetch(`${url}/apps.json`)).json(), { apps: [{ name: 'Bundled sample' }] });
+    await rm(join(buildDir, 'apps.json'));
+    assert.equal((await fetch(`${url}/apps.json`)).status, 404);
     await writeFile(join(dataDir, 'icons', 'new.svg'), '<svg/>');
     assert.equal((await fetch(`${url}/icons/new.svg`)).status, 200);
   });
@@ -83,9 +155,21 @@ test('built files and live data are served independently without restart', async
     assert.equal((await fetch(`${url}/apps.json`)).status, 404);
   });
 
+  await t.test('API path errors remain JSON, including rejected traversal paths', async () => {
+    for (const [path, status] of [
+      ['/api/missing', 404], ['/api/%ZZ', 400], ['/api/%2e%2e%2fprivate.txt', 400],
+    ] satisfies [string, number][]) {
+      const response = await fetch(url + path);
+      assert.equal(response.status, status);
+      assert.equal(response.headers.get('cache-control'), 'no-cache');
+      assert.equal(typeof (await response.json()).error, 'string');
+    }
+  });
+
   await t.test('does not expose other data files, dotfiles, or parent directories', async () => {
     await writeFile(join(buildDir, '.secret'), 'hidden');
-    for (const path of ['/private.txt', '/.secret', '/icons/%2e%2e%2fprivate.txt', '/%2e%2e%2fprivate.txt']) {
+    await writeFile(join(dataDir, 'icons', '.secret'), 'hidden');
+    for (const path of ['/private.txt', '/bifrost.sqlite', '/icons/.secret', '/.secret', '/icons/%2e%2e%2fprivate.txt', '/%2e%2e%2fprivate.txt']) {
       const response = await fetch(url + path);
       assert.ok([400, 403, 404].includes(response.status), `${path}: ${response.status}`);
       assert.doesNotMatch(await response.text(), /not a public route|outside the web root|hidden/);
@@ -93,8 +177,24 @@ test('built files and live data are served independently without restart', async
   });
 });
 
-test('startup fails clearly when the build is missing', () => {
-  assert.throws(() => createDashboardServer({ buildDir: '/example/missing-build', dataDir: '/example/data' }), /build/i);
+test('startup fails clearly when the build is missing', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'bifrost-missing-build-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.throws(() => createDashboardServer({ buildDir: join(root, 'missing-build'), dataDir: join(root, 'data') }), /build/i);
+});
+
+test('startup reports the legacy file and invalid app before exiting', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'bifrost-startup-import-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDir = join(root, 'data');
+  await mkdir(dataDir);
+  await writeFile(join(root, 'index.html'), '<h1>Built dashboard</h1>');
+  await writeFile(join(dataDir, 'apps.json'), '{"apps":[{"name":"","url":"https://app.test"}]}');
+  const result = spawnSync(process.execPath, [join(appRoot, 'server', 'start.ts')], {
+    env: { ...process.env, BIFROST_BUILD_DIR: root, BIFROST_DATA_DIR: dataDir }, encoding: 'utf8',
+  });
+  assert.equal(result.status, 1);
+  assert.ok(result.stderr.includes(`Cannot import ${join(dataDir, 'apps.json')}: app 1 name must be`), result.stderr);
 });
 
 test('an occupied port fails instead of silently selecting another', async t => {

@@ -1,5 +1,8 @@
-import { filterApps, loadApps } from './catalog.ts';
-import type { App } from './catalog.ts';
+import { getCatalog } from './api.ts';
+import { countApps, createCatalogSequence, filterCatalog } from './catalog.ts';
+import type { App, Catalog } from './catalog.ts';
+import { createIcon } from './icon.ts';
+import { createManager } from './manage.ts';
 import './style.css';
 
 function element<T extends HTMLElement>(id: string): T {
@@ -9,24 +12,20 @@ function element<T extends HTMLElement>(id: string): T {
 }
 
 const search = element<HTMLInputElement>('search');
-const grid = element<HTMLUListElement>('app-grid');
+const launcher = element('launcher');
 const section = element('apps-section');
 const totalCount = element('total-count');
-const resultCount = element('result-count');
 const announcement = element('search-announcement');
 const message = element('message');
 const messageTitle = element('message-title');
 const messageDetail = element('message-detail');
 const retry = element<HTMLButtonElement>('retry');
-const source = document.querySelector<HTMLMetaElement>('meta[name="apps-source"]')?.content || './apps.json';
-let apps: App[] = [];
+const manageOpen = element<HTMLButtonElement>('manage-open');
+const manageDialog = element<HTMLDialogElement>('manage');
+let catalog: Catalog = { revision: 0, groups: [], ungrouped: [] };
 
 function countLabel(count: number): string {
   return `${count} ${count === 1 ? 'app' : 'apps'}`;
-}
-
-function initials(name: string): string {
-  return name.split(/\s+/u).slice(0, 2).map(word => Array.from(word)[0] ?? '').join('').toLocaleUpperCase();
 }
 
 function createAppItem(app: App): HTMLLIElement {
@@ -37,30 +36,6 @@ function createAppItem(app: App): HTMLLIElement {
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
   link.setAttribute('aria-label', `Open ${app.name} (${app.domain}, opens in a new tab)`);
-
-  const icon = document.createElement('span');
-  icon.className = 'app-icon';
-  icon.setAttribute('aria-hidden', 'true');
-  const fallback = document.createElement('span');
-  fallback.className = 'icon-fallback';
-  fallback.textContent = initials(app.name);
-  icon.append(fallback);
-
-  if (app.icon) {
-    const image = document.createElement('img');
-    image.alt = '';
-    image.width = 44;
-    image.height = 44;
-    image.decoding = 'async';
-    image.loading = 'lazy';
-    fallback.hidden = true;
-    image.addEventListener('error', () => {
-      image.hidden = true;
-      fallback.hidden = false;
-    }, { once: true });
-    image.src = app.icon;
-    icon.append(image);
-  }
 
   const name = document.createElement('span');
   name.className = 'app-name';
@@ -74,9 +49,28 @@ function createAppItem(app: App): HTMLLIElement {
   arrow.textContent = '↗';
   arrow.setAttribute('aria-hidden', 'true');
 
-  link.append(icon, name, domain, arrow);
+  link.append(createIcon(app.name, app.icon), name, domain, arrow);
   item.append(link);
   return item;
+}
+
+function createSection(title: string, apps: readonly App[], id: string): HTMLElement {
+  const wrapper = document.createElement('section');
+  wrapper.className = 'launcher-section';
+  wrapper.setAttribute('aria-labelledby', id);
+  const line = document.createElement('div');
+  line.className = 'section-line';
+  const heading = document.createElement('h2');
+  heading.id = id;
+  const count = document.createElement('span');
+  count.textContent = `· ${apps.length}`;
+  heading.append(`${title} `, count);
+  line.append(heading);
+  const grid = document.createElement('ul');
+  grid.className = 'app-grid';
+  grid.append(...apps.map(createAppItem));
+  wrapper.append(line, grid);
+  return wrapper;
 }
 
 function showMessage(title: string, detail = '', canRetry = false): void {
@@ -87,19 +81,42 @@ function showMessage(title: string, detail = '', canRetry = false): void {
   retry.hidden = !canRetry;
 }
 
+// Nonempty groups in the user's order, then ungrouped apps. Without any groups, one plain list.
 function renderApps(): void {
-  const visible = filterApps(apps, search.value);
-  grid.replaceChildren(...visible.map(createAppItem));
-  resultCount.textContent = `· ${visible.length}`;
-  announcement.textContent = `${countLabel(visible.length)}${search.value.trim() ? ' matching your search' : ''}.`;
-  if (apps.length === 0) {
-    showMessage('No apps yet.', 'Apps will appear here when they’re available.');
-  } else if (visible.length === 0) {
+  const total = countApps(catalog);
+  const visible = filterCatalog(catalog, search.value);
+  const shown = countApps(visible);
+  const sections = visible.groups.map(group => createSection(group.name, group.apps, `group-${group.id}`));
+  if (visible.ungrouped.length > 0) {
+    sections.push(createSection(catalog.groups.length > 0 ? 'Ungrouped' : 'All apps', visible.ungrouped, 'ungrouped'));
+  }
+  launcher.replaceChildren(...sections);
+  totalCount.textContent = countLabel(total);
+  announcement.textContent = `${countLabel(shown)}${search.value.trim() ? ' matching your search' : ''}.`;
+  if (total === 0) {
+    showMessage('No apps yet.', 'Use Manage to add your first app.');
+  } else if (shown === 0) {
     showMessage('No matching apps.', 'Try another name or domain.');
   } else {
     showMessage('');
   }
 }
+
+function setCatalog(next: Catalog): void {
+  catalog = next;
+  search.disabled = false;
+  manageOpen.disabled = false;
+  renderApps();
+  manager.update();
+}
+
+const applyCatalog = createCatalogSequence(setCatalog);
+const manager = createManager({
+  dialog: manageDialog,
+  trigger: manageOpen,
+  getCatalog: () => catalog,
+  applyCatalog,
+});
 
 async function refreshApps(): Promise<void> {
   section.setAttribute('aria-busy', 'true');
@@ -107,10 +124,7 @@ async function refreshApps(): Promise<void> {
   retry.disabled = true;
   showMessage('Loading apps…');
   try {
-    apps = await loadApps(new URL(source, document.baseURI).href);
-    totalCount.textContent = countLabel(apps.length);
-    search.disabled = false;
-    renderApps();
+    await applyCatalog(getCatalog);
   } catch (error) {
     console.error('Unable to load the app catalog:', error);
     showMessage('Couldn’t load your apps.', 'Please try again in a moment.', true);
@@ -122,8 +136,9 @@ async function refreshApps(): Promise<void> {
 
 search.addEventListener('input', renderApps);
 retry.addEventListener('click', () => { void refreshApps(); });
+manageOpen.addEventListener('click', () => manager.open());
 document.addEventListener('keydown', event => {
-  if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing || manageDialog.open) return;
   const active = document.activeElement;
   const isEditing = active instanceof HTMLElement && (active.matches('input, textarea, select') || active.isContentEditable);
   if (event.key === '/' && !isEditing && !search.disabled) {

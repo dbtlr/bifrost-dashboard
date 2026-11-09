@@ -1,6 +1,6 @@
 # Bifrost dashboard
 
-A static app launcher with a black background, responsive icon grid, and local search. TypeScript and Vite build the frontend. App discovery is handled by external automation that publishes a JSON catalog and icons.
+An app launcher with a black background, grouped responsive icon grid, local search, and a Manage panel for editing it. TypeScript and Vite build the frontend. A small Node server stores apps and groups in SQLite and exposes a JSON API.
 
 ## Development
 
@@ -8,43 +8,31 @@ Requires Node.js 24 or newer.
 
 ```sh
 npm ci
+mkdir -p data && cp -r sample/. data/
 npm run dev
 ```
 
-The checked-in `public/apps.json` contains illustrative `example.test` URLs and local demo icons. Replace it with actual apps. Nothing in the dashboard queries or changes the proxy.
+The checked-in `sample/` contains illustrative `example.test` URLs and local demo icons. The first start imports `data/apps.json` into SQLite. Later starts never import it again, even after every app is deleted.
 
-## Catalog contract
+Vite serves the same API and data icons as the production server. Use `BIFROST_DATA_DIR` to select another data directory. The launcher reads and changes the catalog through this API. Nothing in the dashboard queries or changes the proxy.
 
-```json
-{
-  "apps": [
-    {
-      "name": "Photos",
-      "url": "https://photos.example.test",
-      "icon": "icons/photos.v1.svg"
-    }
-  ]
-}
-```
+Relative data directories resolve from the application root, even with a different Vite root. Vite denies direct file access to the data directory and `sample/`; use `/api/` for catalog data and `/icons/` for live icons.
 
-- `name`: required, nonempty display name.
-- `url`: required, absolute HTTP(S) URL without embedded credentials. Paths and ports are supported. The host is displayed below the app name.
-- `icon`: optional URL or path on the same origin as the catalog. Relative paths resolve beside the catalog. SVG, PNG, and other browser-supported image formats work. Missing or broken images fall back to initials. SVG files are displayed as images, never inserted as markup.
+## Launcher and Manage panel
 
-The catalog is fetched at runtime on each page load, with cache revalidation and a ten-second timeout. It is never imported into the JavaScript bundle. Apps are sorted alphabetically, searched by name or domain, and opened in new tabs. An empty array displays an empty state; an invalid catalog or unavailable file displays a retry action. There is no background polling.
+The launcher fetches `api/catalog` on each page load, with cache revalidation and a ten-second timeout, and validates the whole response before showing it. It shows each nonempty group as a section in the order you set, then ungrouped apps under "Ungrouped". With no groups, one "All apps" section lists everything. Search matches an app's name or its domain across groups and hides groups without matches. Apps open in new tabs. An empty catalog shows an empty state; an invalid or unavailable response shows a retry action. There is no background polling.
 
-The default source is `./apps.json`. Change the `apps-source` meta tag in `index.html` to configure its URL. Keep catalog and icon serving on the dashboard's origin. For a deployment under a URL prefix, use Vite's `--base` option and relative icon paths.
+Icon paths from the API are relative to the dashboard root and resolve against the page's base URL, so they work under a `--base` prefix. Missing or broken images fall back to initials. Icons are shown as images, never inserted as markup, and all API text is rendered as plain text.
 
-## Automation updates
+**Manage** opens a side panel (a full-screen sheet on phones) with the same groups and apps as a tree. Drag the handles to reorder groups, reorder apps, or move an app to another group, including an empty one; the tree and launcher update from the server's response. A rejected change, such as a conflict with an edit made elsewhere, reloads the catalog and shows a message. Each group has Rename, Move up, Move down, and Delete (its apps become ungrouped). Selecting an app opens a form to change its name, URL, group, and icon, to move it up or down without dragging, or to remove it. **+ App** and **+ Group** create new ones. Every change is saved immediately, one at a time: while a change is saving, the controls that make changes are disabled, so a slow reply can never overwrite newer state. Reorders send the catalog revision they were built from, so a reorder from an outdated view is rejected instead of undoing changes made elsewhere. The API behind the panel is documented in [docs/api.md](docs/api.md).
 
-During development, automation can write `public/apps.json` and `public/icons/`. The included Node server also uses `public/` by default. For the systemd service, automation writes to `BIFROST_DATA_DIR`, which contains `apps.json` and `icons/`. This directory is independent of frontend builds.
+## Data and automation
 
-1. Write any new icons first. Use versioned filenames when replacing an icon, such as `photos.v2.svg`.
-2. Generate and validate a complete catalog in a temporary file beside the served `apps.json`.
-3. Atomically rename that file to `apps.json` on the same filesystem. Readers then see either the old or new complete catalog.
-4. The next page load or browser refresh picks up the change, without a frontend rebuild.
+`BIFROST_DATA_DIR` is writable state, separate from frontend builds. It contains `bifrost.sqlite` and `icons/`. The server creates the data directory and `icons/` when needed, and closes the database on shutdown.
 
-Retain old icons while cached pages may still reference them. A directory mount is preferable to a single-file bind mount when automation uses atomic replacement.
+Use the [catalog management API](docs/api.md) to add, change, reorder, and remove apps and groups. Upload icons through the API. It names icons by content hash and removes files when no app references them. All API responses use `Cache-Control: no-cache`.
+
+Automation reads `/api/catalog` and updates individual resources through the API. The catalog carries a revision that increases with every change. A layout write must send the revision it was built from and is rejected with `409` if another change came first, so a reorder never silently undoes edits it didn't see. Writing `apps.json` after the initial import has no effect. Back up the data directory while the service is stopped.
 
 ## Build and hosting
 
@@ -57,83 +45,48 @@ npm start
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `BIFROST_HOST` | `127.0.0.1` | Listening interface. Use an appropriate reachable interface if the proxy runs elsewhere or in a container. |
+| `BIFROST_HOST` | `127.0.0.1` | Listening interface. The systemd service accepts only loopback addresses. |
 | `BIFROST_PORT` | `4310` | Fixed HTTP port, configurable from 1 to 65535. Use an unprivileged port for the systemd service. |
 | `BIFROST_BUILD_DIR` | `dist/` | Built frontend files. |
-| `BIFROST_DATA_DIR` | `public/` | Runtime `apps.json` and `icons/`. |
+| `BIFROST_DATA_DIR` | `data/` | Writable SQLite database and uploaded `icons/`. |
 
 Relative directory settings resolve from the application root, independent of the process working directory. For example, `BIFROST_PORT=4311 npm start` changes only the built server's port.
 
-The server revalidates files with `Cache-Control: no-cache` and reads catalog and icon changes on each request. Missing live files return 404 even if a sample exists in the build. It serves the app at the origin root; a reverse proxy mounting it under a prefix must strip that prefix, and the frontend must be built with the matching Vite `--base`.
+The server routes `/api/` to the JSON API and `/icons/` to the data directory. Other paths serve the build. `/apps.json` has no live data route. Files use `Cache-Control: no-cache`; missing data icons return 404 even if the build contains a matching file. It serves the app at the origin root; a reverse proxy mounting it under a prefix must strip that prefix, and the frontend must be built with the matching Vite `--base`.
 
-Vite still copies `public/` into `dist/` for standalone previews. `npm run preview` is only for checking that static build locally. The frontend can also be hosted by any static web server without Node, provided it maps the live catalog and icons separately from the build.
+`sample/` and `data/` are not copied into `dist/`. `npm run preview` serves only the static build, without the API or data icons. Use `npm start` or `npm run dev` to exercise the API.
 
-## Linux lifecycle reference
+## systemd service
 
-`lifecycle.py` is a self-contained standard-library Python controller. Fleet runs it with trusted OS Python using `-I -S -B`.
-The package version is `0.1.0`. Build and check release artifacts on a Center before publishing or deploying them.
+`server/service.ts` installs and controls the dashboard as a systemd service. The service runs the built server under a temporary unprivileged systemd identity, restarts it on failure, and keeps its data in `/var/lib/bifrost-dashboard`. The commands do not build the frontend or configure the reverse proxy. [Service commands](docs/service.md) is the full reference.
 
-The runtime archive extracts directly into an immutable release root. It contains `lifecycle.py`, `bin/node`, `server/`, `dist/`, production dependencies, and notices.
-It contains no npm toolchain, configuration, runtime catalog, demo data, or database.
-Fleet pins and verifies the archive checksum, retains prior releases, invokes install, and checks HTTP health before activation.
+Place the release outside `/home` and `/tmp`, for example at `/srv/bifrost-dashboard`, and keep it writable only by root. Run `npm ci` and `npm run build` there; `npm prune --omit=dev` can then drop the development dependencies. The service runs the Node.js 24 binary that runs the command, unless `BIFROST_NODE_BIN` names another one.
 
-Each deployment command is a relative argument array:
+Configuration is optional. To change the port or data directory, create the file before installing:
 
-```toml
-[deployment.commands]
-install = ["lifecycle.py", "install"]
-restart = ["lifecycle.py", "restart"]
-status = ["lifecycle.py", "status"]
-logs = ["lifecycle.py", "logs"]
-version = ["lifecycle.py", "version"]
+```sh
+sudo install -d -m 0755 /etc/bifrost-dashboard
+sudo install -m 0644 deploy/dashboard.env.example /etc/bifrost-dashboard/dashboard.env
+sudoedit /etc/bifrost-dashboard/dashboard.env
 ```
 
-`FLEET_RELEASE` identifies the absolute installed release root. Without it, the controller uses its own directory.
-Production operations require Linux root and root-owned paths without symlinks, hard links, or group/other write access.
-The controller validates the release tree and never executes Node. Systemd starts Node through `DynamicUser=yes`.
-The unit retains strict filesystem protection, home protection, private temporary storage, and privilege restrictions.
+Check the chosen port with `ss -ltn`. Then install and start the service from the release directory:
 
-Native configuration remains at `/etc/bifrost-dashboard/dashboard.env`. Install never writes this file or `/srv/bifrost-dashboard-data`.
-Missing configuration fails with a provisioning message. The accepted format is one `KEY=value` assignment per line, with optional matching quotes.
-Blank lines and full-line comments are accepted. Escapes, inline comments, duplicate keys, and unknown settings are unsupported.
-`BIFROST_HOST` must be a loopback IP address. `BIFROST_PORT` must be between 1024 and 65535.
-`BIFROST_DATA_DIR` must be an absolute simple path outside the release, home directories, and temporary directories.
-Defaults are `127.0.0.1`, `4310`, and `/srv/bifrost-dashboard-data`.
-Legacy `BIFROST_NODE_BIN`, `BIFROST_APP_DIR`, and `BIFROST_BUILD_DIR` assignments are accepted but do not select executable code.
+```sh
+sudo node server/service.ts install
+node server/service.ts status
+sudo node server/service.ts logs --lines 50
+```
 
-The controller validates configuration and embeds the accepted settings in the generated unit.
-Executable and build paths always refer to the selected release, regardless of legacy path settings.
-Configuration edits take effect on the next `install` or `restart`. Restart verifies ownership before regenerating the unit and does not enable a disabled service.
-Catalog changes remain visible without installation or restart. Automation retains ownership of catalog data and icons.
-Data files must be readable by the service identity. No schema or database migrations run.
+`install` writes the unit, enables and restarts the service, and checks that systemd reports it active. If a step fails, it puts the previous unit and service state back. The service listens on loopback only, because the API has no authentication; point the reverse proxy at it on the same host.
 
-Install writes `/etc/systemd/system/bifrost-dashboard.service` and `/var/lib/bifrost-dashboard/ownership.json` atomically, under a lifecycle lock.
-The ownership record stores the selected release, validated settings, and expected unit checksum.
-Install reloads systemd, enables and restarts the service, and requires `is-active` success.
-That result describes the system manager's report. Fleet's separate HTTP health check determines application health.
-Repeated installs converge the same unit and preserve native data.
+- **New release:** build it in its own directory and run its `server/service.ts install`. Running an earlier release's `install` rolls back.
+- **Configuration change:** run `sudo node server/service.ts restart` from the installed release.
+- **Removal:** run `sudo node server/service.ts uninstall`. It keeps the data directory and the configuration file.
 
-An existing unit without an ownership record is foreign. Adoption requires `install --adopt-unit-sha256 HASH` with its exact reviewed SHA-256.
-No legacy hash grants implicit adoption. Vendor fragments and drop-ins are refused, including during adoption.
-Install, restart, status, and logs reject unit drift, unsafe ownership, or mismatched ownership metadata.
-Status and logs invoke real `systemctl` and `journalctl`. `logs --lines N` accepts 1 through 10000, defaulting to 50.
-Manager errors and timeouts return failure. Version prints only the package version, `0.1.0`.
+A fresh database imports a legacy `apps.json` from the data directory once, accepting a leading UTF-8 BOM. An invalid `apps.json` stops startup until it is fixed or removed. The error names the file and invalid app number. No apps are imported on failure, so the corrected file can be imported on the next start.
 
-Manager commands share a 30-second operation budget, with a separate 20-second recovery budget. Each command is bounded to 20 seconds. A failed manager action restores the prior unit and ownership bytes, reloads systemd, and attempts to restart the prior unit.
-If no prior unit existed, recovery removes candidate metadata and attempts to stop the failed service.
-Recovery reverses enabling when the unit was previously disabled and leaves a previously stopped service stopped. Recovery errors are reported separately and require manager inspection.
-A manager timeout can leave a systemd job running. Metadata restoration does not prove process recovery.
-A process interruption or power loss between atomic file replacements can require manual reconciliation of unit and ownership metadata.
-
-Fleet can invoke a retained prior release's `install` after a candidate health failure.
-Install verifies the current app-owned record before replacing it. It permits both forward switches and prior-release reinstalls.
-Other commands reject a controller whose release differs from the installed unit.
-Keep retained release directories until recovery is verified. On drift, inspect and restore the reviewed unit and matching ownership record before retrying.
-Do not erase the ownership record to bypass a drift error.
-
-`--fixture-root ABSOLUTE_PATH` redirects OS paths into an isolated test directory, using its owner's UID.
-Fixture managers must exist inside that directory at `usr/bin/systemctl` and `usr/bin/journalctl`.
-This mode never falls back to host managers. It provides filesystem tests without granting installation authority.
+Installations from earlier versions kept data in `/srv/bifrost-dashboard-data`. [Service commands](docs/service.md#data) describes how to move it; `install` refuses to start an empty catalog while that directory exists.
 
 ## Checks
 
@@ -143,18 +96,18 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-Linux browser checks also need Chromium's system libraries; on a development or CI machine that permits package installation, `npx playwright install --with-deps chromium` installs them. Browser tests run against the production build and cover runtime catalog updates, search, load failures, icon fallback, unsafe text, and narrow-screen layout.
+Linux browser checks also need Chromium's system libraries; on a development or CI machine that permits package installation, `npx playwright install --with-deps chromium` installs them. `npm run test:browser` builds the frontend first. Each browser test starts its own dashboard server on a random port with a fresh temporary database, so tests are isolated and run in parallel. They cover the grouped launcher, search, load failures, and the Manage panel (adding, editing, icons, dragging, keyboard reordering, deletion, the phone sheet, conflict recovery, slow and concurrent changes, and focus after changes) in desktop and phone projects.
 
-`npm test` also exercises the built server's file routing, cache headers, runtime updates, missing files, and occupied ports. The deploy unit is an illustrative template. Validate a controller-rendered unit with `systemd-analyze verify` in isolated Linux checks.
+`npm run check` runs the unit tests, TypeScript checks, and Vite build. Unit tests cover one-time import, schema upgrades, catalog revisions, ordering, atomic layouts, JSON validation, the API client, search, and the Manage panel's move and edit rules, icon uploads and cleanup, file routing, cache headers, path protections, and occupied ports. Service tests run `server/service.ts` against a temporary system root with stand-in `systemctl` and `journalctl`. They cover unit rendering, configuration rules, recovery after failed installs, and every command; they need a non-root user. To check a rendered unit's syntax, run `server/service.ts unit` from a release outside `/home` and `/tmp` (or with `--root` set to an empty directory outside the release), save the output as `bifrost-dashboard.service`, and run `systemd-analyze verify` on it.
 
 The original static design studies remain in `designs/` and are not part of the production build.
 
 ## Privacy boundary
 
-Release artifacts contain application code and dependency notices. Runtime artifacts exclude the sample catalog, icons, environment files, and mutable data. Publish only illustrative source examples. Keep actual service catalogs and deployment configuration outside the release source and runtime artifacts. The dashboard reads its configured catalog and does not discover services or write catalog data.
+The checked-in `sample/` catalog and icons are illustrative examples. Keep real service catalogs, icons, and deployment configuration out of the repository; they belong in the data directory and `/etc/bifrost-dashboard/`. The dashboard shows and edits the catalog it stores. It does not discover services.
 
 ## License and artwork
 
-The application is licensed under the [MIT License](LICENSE), copyright 2026 Drew Butler. Package metadata retains `private: true`; these artifacts are not an npm publication.
+The application is licensed under the [MIT License](LICENSE), copyright 2026 Drew Butler. Package metadata retains `private: true`; the package is not published to npm.
 
 The 12 demo SVGs and corresponding inline design-study marks are newly authored generic geometric examples. They replace artwork whose provenance was unverified. No provenance claim is made for the replaced artwork. The application brand remains unchanged and contains no embedded demo marks. Third-party dependencies retain their own licenses and copyright notices; the application license does not replace those terms.

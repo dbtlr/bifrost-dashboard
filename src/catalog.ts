@@ -1,63 +1,103 @@
+import { isRecord, requireAppUrl, requireName, requireWebUrl } from './app-rules.ts';
+
 export interface App {
+  id: number;
   name: string;
   url: string;
   domain: string;
   icon?: string;
+  groupId: number | null;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+export interface Group {
+  id: number;
+  name: string;
+  apps: App[];
 }
 
-function requireText(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`${field} must be a nonempty string.`);
+export interface Catalog {
+  revision: number;
+  groups: Group[];
+  ungrouped: App[];
+}
+
+function requireId(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} id must be a positive integer.`);
   }
-  return value.trim();
+  return value;
 }
 
-function requireWebUrl(value: string, base?: string): URL {
-  const url = new URL(value, base);
-  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) {
-    throw new Error('URLs must use HTTP(S) and must not contain credentials.');
+export function parseApp(entry: unknown, base: URL, label: string): App {
+  if (!isRecord(entry)) throw new Error(`${label} must be an object.`);
+  const url = new URL(requireAppUrl(entry.url));
+  const groupId = entry.groupId === null || entry.groupId === undefined ? null : requireId(entry.groupId, `${label} group`);
+  const app: App = { id: requireId(entry.id, label), name: requireName(entry.name), url: url.href, domain: url.host, groupId };
+
+  if (entry.icon !== null && entry.icon !== undefined) {
+    if (typeof entry.icon !== 'string' || !entry.icon.trim()) throw new Error(`${label} icon must be a nonempty string.`);
+    const icon = requireWebUrl(entry.icon.trim(), base.href);
+    if (icon.origin !== base.origin) throw new Error(`${label} icon must be hosted alongside the dashboard.`);
+    app.icon = icon.href;
   }
-  return url;
+  return app;
 }
 
-// Validate the entire snapshot so a partial automation write cannot silently hide apps.
-export function parseCatalog(value: unknown, sourceUrl: string): App[] {
-  if (!isRecord(value) || !Array.isArray(value.apps)) {
-    throw new Error('The catalog must contain an apps array.');
+function parseApps(value: unknown, base: URL, label: string): App[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array.`);
+  return value.map((entry, index) => parseApp(entry, base, `${label} ${index + 1}`));
+}
+
+// Validate the entire snapshot so a partial response cannot silently hide apps. Icon paths
+// are relative to the dashboard root (baseUrl), not to the API URL.
+export function parseCatalog(value: unknown, baseUrl: string): Catalog {
+  if (!isRecord(value) || !Array.isArray(value.groups)) {
+    throw new Error('The catalog must contain a groups array and an ungrouped array.');
   }
-
-  const source = requireWebUrl(sourceUrl);
-  return value.apps.map((entry: unknown, index: number): App => {
-    if (!isRecord(entry)) throw new Error(`App ${index + 1} must be an object.`);
-    const name = requireText(entry.name, `App ${index + 1} name`);
-    const url = requireWebUrl(requireText(entry.url, `App ${index + 1} URL`));
-    const app: App = { name, url: url.href, domain: url.host };
-
-    if (entry.icon !== undefined) {
-      const icon = requireWebUrl(requireText(entry.icon, `App ${index + 1} icon`), source.href);
-      if (icon.origin !== source.origin) {
-        throw new Error(`App ${index + 1} icon must be hosted alongside the catalog.`);
-      }
-      app.icon = icon.href;
-    }
-    return app;
-  }).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }) || a.url.localeCompare(b.url));
-}
-
-export async function loadApps(sourceUrl: string, fetcher: typeof fetch = fetch): Promise<App[]> {
-  const response = await fetcher(sourceUrl, {
-    cache: 'no-cache',
-    signal: AbortSignal.timeout(10_000),
+  const { revision } = value;
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error('The catalog revision must be a nonnegative integer.');
+  }
+  const base = requireWebUrl(baseUrl);
+  const groups = value.groups.map((entry: unknown, index: number): Group => {
+    if (!isRecord(entry)) throw new Error(`Group ${index + 1} must be an object.`);
+    return {
+      id: requireId(entry.id, `Group ${index + 1}`),
+      name: requireName(entry.name, 60),
+      apps: parseApps(entry.apps, base, `Group ${index + 1} app`),
+    };
   });
-  if (!response.ok) throw new Error(`Catalog request failed (${response.status}).`);
-  return parseCatalog(await response.json(), sourceUrl);
+  return { revision, groups, ungrouped: parseApps(value.ungrouped, base, 'Ungrouped app') };
 }
 
-export function filterApps(apps: readonly App[], query: string): App[] {
+// Applies catalogs in the order their requests started. A response whose request started before the
+// newest applied one is stale and dropped, so a slow reply can never replace newer state.
+export function createCatalogSequence(apply: (catalog: Catalog) => void) {
+  let started = 0;
+  let applied = 0;
+  return async (request: () => Promise<Catalog>): Promise<boolean> => {
+    const ticket = ++started;
+    const catalog = await request();
+    if (ticket < applied) return false;
+    applied = ticket;
+    apply(catalog);
+    return true;
+  };
+}
+
+export function countApps(catalog: Catalog): number {
+  return catalog.groups.reduce((total, group) => total + group.apps.length, catalog.ungrouped.length);
+}
+
+// What the launcher shows: apps matching the query, and no group that has none (empty groups included).
+export function filterCatalog(catalog: Catalog, query: string): Catalog {
   const normalized = query.trim().toLocaleLowerCase();
-  return apps.filter(app => `${app.name} ${app.domain}`.toLocaleLowerCase().includes(normalized));
+  const matches = (app: App): boolean => [app.name, app.domain].some(text => text.toLocaleLowerCase().includes(normalized));
+  return {
+    revision: catalog.revision,
+    groups: catalog.groups
+      .map(group => ({ ...group, apps: group.apps.filter(matches) }))
+      .filter(group => group.apps.length > 0),
+    ungrouped: catalog.ungrouped.filter(matches),
+  };
 }
