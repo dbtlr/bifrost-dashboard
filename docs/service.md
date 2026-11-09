@@ -108,9 +108,10 @@ Earlier versions kept data in `/srv/bifrost-dashboard-data`, which these command
 
 1. Stop the service.
 2. Copy everything in `/srv/bifrost-dashboard-data` into `/var/lib/bifrost-dashboard`, including `bifrost.sqlite` if it exists, `apps.json`, and `icons/`. The database, when present, holds every change made since the import.
-3. Remove `BIFROST_DATA_DIR` from the configuration, or set it to `/var/lib/bifrost-dashboard`.
-4. Run `install`. A unit that an earlier tool wrote lacks the managed line, so the first install needs `--force`.
-5. Once the dashboard shows the expected catalog, archive or remove `/srv/bifrost-dashboard-data`. While it exists, `install` and `restart` keep refusing a data directory without a catalog.
+3. Remove `ownership.json` and `.lock` from `/var/lib/bifrost-dashboard` if an earlier deployment tool left them there. systemd hands that directory to the service on first start, so those files would otherwise become service data.
+4. Remove `BIFROST_DATA_DIR` from the configuration, or set it to `/var/lib/bifrost-dashboard`.
+5. Run `install`. A unit that an earlier tool wrote lacks the managed line, so the first install needs `--force`.
+6. Once the dashboard shows the expected catalog, archive or remove `/srv/bifrost-dashboard-data`. While it exists, `install` and `restart` keep refusing a data directory without a catalog.
 
 ## Testing
 

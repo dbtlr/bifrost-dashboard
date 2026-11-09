@@ -14,10 +14,18 @@ const appRoot = fileURLToPath(new URL('../', import.meta.url));
 const MARKER = '# Managed by bifrost-dashboard server/service.ts';
 const asRoot = process.geteuid?.() === 0;
 
+// Like systemd, stop and disable answer "not loaded" (5) and "does not exist" (1) once the unit file is gone.
 const fakeSystemctl = (root: string) => `#!/bin/sh
 S='${root}/state'
+UNIT='${root}/etc/systemd/system/bifrost-dashboard.service'
 echo "systemctl $*" >> '${root}/calls'
 if [ -e "${root}/fail/$1" ]; then echo "$1 failed" >&2; exit 1; fi
+if [ ! -e "$UNIT" ]; then
+  case "$1" in
+    stop) echo "Failed to stop $2: Unit $2 not loaded." >&2; exit 5 ;;
+    disable) echo "Failed to disable unit: Unit file $2 does not exist." >&2; exit 1 ;;
+  esac
+fi
 case "$1" in
   is-enabled) if [ -e "$S/enabled" ]; then echo enabled; exit 0; else echo disabled; exit 1; fi ;;
   is-active) if [ -e "$S/active" ]; then echo active; exit 0; else echo inactive; exit 3; fi ;;
@@ -188,6 +196,15 @@ test('a configuration path that is not a regular file fails instead of using def
   assert.match(result.stderr, /dashboard\.env/);
 });
 
+test('a configuration link whose target is missing fails instead of using defaults', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await symlink(join(f.base, 'missing.env'), join(f.root, 'etc/bifrost-dashboard/dashboard.env'));
+  const result = f.run('unit');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /dashboard\.env cannot be read/);
+  assert.equal(result.stdout, '');
+});
+
 test('an incomplete release is refused and the missing file is named', { skip: asRoot }, async t => {
   const f = await fixture(t);
   await rm(join(f.release, 'dist/index.html'));
@@ -295,6 +312,16 @@ test('install reports status 4 when recovery also fails', { skip: asRoot }, asyn
   const result = f.run('install');
   assert.equal(result.status, 4);
   assert.match(result.stderr, /Recovery failed/);
+  assert.match(result.stderr, /Recovery steps completed: none\./);
+});
+
+test('a failed recovery names the recovery steps that completed', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await f.dies();
+  await f.fail('disable');
+  const result = f.run('install');
+  assert.equal(result.status, 4);
+  assert.match(result.stderr, /Recovery steps completed: stop\./);
 });
 
 test('a failure while writing the unit changes nothing', { skip: asRoot }, async t => {
@@ -368,6 +395,14 @@ test('uninstall stops and disables the service, removes the unit, and can be run
   assert.deepEqual(await f.state(), { enabled: false, active: false });
   const again = f.run('uninstall');
   assert.equal(again.status, 0, again.stderr);
+});
+
+test('a rerun of uninstall still fails on errors other than a unit systemd no longer knows', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await f.fail('stop');
+  const result = f.run('uninstall');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /stop failed/);
 });
 
 test('uninstall refuses an unmanaged unit unless forced', { skip: asRoot }, async t => {

@@ -36,7 +36,7 @@ interface Options {
 const COMMANDS = new Set(['install', 'restart', 'status', 'logs', 'version', 'unit', 'uninstall']);
 const NEEDS_ROOT = new Set(['install', 'restart', 'logs', 'uninstall']);
 
-export function parseArgs(args: string[]): Options {
+function parseArgs(args: string[]): Options {
   const options: Options = { command: '', root: null, force: false, lines: 50 };
   let sawLines = false;
   for (let index = 0; index < args.length; index++) {
@@ -96,7 +96,7 @@ interface Config {
 const SETTINGS = new Set(['BIFROST_HOST', 'BIFROST_PORT', 'BIFROST_DATA_DIR', 'BIFROST_NODE_BIN']);
 const LEGACY_SETTINGS = new Set(['BIFROST_APP_DIR', 'BIFROST_BUILD_DIR']);
 
-export function parseEnv(text: string, warn: (message: string) => void): Map<string, string> {
+function parseEnv(text: string, warn: (message: string) => void): Map<string, string> {
   const settings = new Map<string, string>();
   const seen = new Set<string>();
   text.replace(/^﻿/, '').split(/\r?\n/).forEach((raw, index) => {
@@ -120,7 +120,7 @@ export function parseEnv(text: string, warn: (message: string) => void): Map<str
 const OCTET = '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])';
 const LOOPBACK_V4 = new RegExp(`^127(\\.${OCTET}){3}$`);
 
-export function validateConfig(settings: Map<string, string>, defaultNode: string): Config {
+function validateConfig(settings: Map<string, string>, defaultNode: string): Config {
   const host = settings.get('BIFROST_HOST') ?? '127.0.0.1';
   if (host !== '::1' && !LOOPBACK_V4.test(host)) {
     throw new Failure(`BIFROST_HOST must be ::1 or a 127.x.x.x address without leading zeros, not ${JSON.stringify(host)}.`);
@@ -217,7 +217,7 @@ function installedRelease(unit: InstalledUnit): string {
   return lines[0]!.slice('WorkingDirectory='.length);
 }
 
-export function renderUnit(template: string, release: string, config: Config): string {
+function renderUnit(template: string, release: string, config: Config): string {
   const values: [string, string][] = [
     ['@RELEASE@', release], ['@NODE@', config.node], ['@HOST@', config.host], ['@PORT@', String(config.port)],
     ['@DATA_DIR@', config.dataDir], ['@STATE_DIRECTORY@', config.stateName],
@@ -230,7 +230,8 @@ export function renderUnit(template: string, release: string, config: Config): s
 }
 
 // Writes beside the unit under a name systemd ignores, sets the mode, flushes, then renames over it.
-function writeAtomically(path: string, text: string): void {
+// If this throws, the file at `path` is unchanged. Call syncDirectory afterwards to make the rename durable.
+function replaceFile(path: string, text: string): void {
   const temporary = join(dirname(path), `.bifrost-dashboard.${randomBytes(6).toString('hex')}.tmp`);
   try {
     const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
@@ -245,6 +246,9 @@ function writeAtomically(path: string, text: string): void {
   } finally {
     rmSync(temporary, { force: true });
   }
+}
+
+function syncDirectory(path: string): void {
   const directory = openSync(dirname(path), constants.O_RDONLY);
   try {
     fsyncSync(directory);
@@ -267,10 +271,10 @@ interface Context {
 function readConfiguration(context: Context): Config {
   const path = context.system.path('/etc/bifrost-dashboard/dashboard.env');
   let text = '';
-  const info = statSync(path, { throwIfNoEntry: false });
-  if (info) {
-    if (!info.isFile()) throw new Failure(`${path} is not a regular file.`);
+  // Only a missing file means defaults; a broken link or an unreadable path fails.
+  if (lstatSync(path, { throwIfNoEntry: false })) {
     try {
+      if (!statSync(path).isFile()) throw new Error('it is not a regular file');
       text = readFileSync(path, 'utf8');
     } catch (error) {
       throw new Failure(`${path} cannot be read: ${(error as Error).message}`);
@@ -317,8 +321,9 @@ function apply(context: Context, unit: string, previous: InstalledUnit | null, e
   const { system } = context;
   const wasEnabled = system.manager('systemctl', ['is-enabled', SERVICE], { allowed: 'any' }).stdout.trim() === 'enabled';
   const wasActive = system.manager('systemctl', ['is-active', SERVICE], { allowed: 'any' }).status === 0;
-  writeAtomically(context.unitPath, unit);
+  replaceFile(context.unitPath, unit);
   try {
+    syncDirectory(context.unitPath);
     system.systemctl('daemon-reload');
     if (enable) system.systemctl('enable', SERVICE);
     system.systemctl('restart', SERVICE);
@@ -327,15 +332,26 @@ function apply(context: Context, unit: string, previous: InstalledUnit | null, e
     }
   } catch (error) {
     const reason = (error as Error).message;
-    try {
-      if (!wasActive) system.systemctl('stop', SERVICE);
-      if (!wasEnabled) system.systemctl('disable', SERVICE);
-      if (previous) writeAtomically(context.unitPath, previous.text);
-      else rmSync(context.unitPath, { force: true });
-      system.systemctl('daemon-reload');
-      if (wasActive) system.systemctl('restart', SERVICE);
-    } catch (recovery) {
-      throw new Failure(`${reason} Recovery failed: ${(recovery as Error).message} Inspect ${SERVICE} before retrying.`, 4);
+    const steps: [string, () => void][] = [
+      ...(wasActive ? [] : [['stop', () => system.systemctl('stop', SERVICE)] as [string, () => void]]),
+      ...(wasEnabled ? [] : [['disable', () => system.systemctl('disable', SERVICE)] as [string, () => void]]),
+      [previous ? 'restore the previous unit' : 'remove the new unit', () => {
+        if (previous) replaceFile(context.unitPath, previous.text);
+        else rmSync(context.unitPath, { force: true });
+        syncDirectory(context.unitPath);
+      }],
+      ['daemon-reload', () => system.systemctl('daemon-reload')],
+      ...(wasActive ? [['restart', () => system.systemctl('restart', SERVICE)] as [string, () => void]] : []),
+    ];
+    const done: string[] = [];
+    for (const [name, step] of steps) {
+      try {
+        step();
+      } catch (recovery) {
+        const completed = done.length ? done.join(', ') : 'none';
+        throw new Failure(`${reason} Recovery failed: ${(recovery as Error).message} Recovery steps completed: ${completed}. Inspect ${SERVICE} before retrying.`, 4);
+      }
+      done.push(name);
     }
     throw new Failure(`${reason} The previous unit and service state were restored.`);
   }
@@ -372,13 +388,19 @@ function uninstall(context: Context): void {
   if (installed && !installed.managed && !context.options.force) {
     throw new Failure(`${context.unitPath} was not written by these commands. Use uninstall --force to remove it.`);
   }
-  // Without a unit file, this finishes an earlier partial run: a unit systemd no longer knows counts as stopped.
-  const allowed = installed ? [0] : 'any' as const;
+  // Without a unit file, this finishes an earlier partial run: systemd's "not loaded" (stop, status 5)
+  // and "does not exist" (disable) answers count as done. Any other failure is real.
+  const settled = (command: 'stop' | 'disable') => () => {
+    if (installed) return void system.systemctl(command, SERVICE);
+    const result = system.manager('systemctl', [command, SERVICE], { allowed: 'any' });
+    const gone = result.status === 0 || (command === 'stop' ? result.status === 5 : /does not exist|not found/i.test(result.stderr));
+    if (!gone) throw new Failure(`systemctl ${command} failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : ` with status ${result.status}.`}`);
+  };
   const done: string[] = [];
   const steps: [string, () => void][] = [
-    ['stop', () => system.manager('systemctl', ['stop', SERVICE], { allowed })],
-    ['disable', () => system.manager('systemctl', ['disable', SERVICE], { allowed })],
-    ['remove the unit', () => rmSync(context.unitPath, { force: true })],
+    ['stop', settled('stop')],
+    ['disable', settled('disable')],
+    ['remove the unit', () => { rmSync(context.unitPath, { force: true }); syncDirectory(context.unitPath); }],
     ['daemon-reload', () => system.systemctl('daemon-reload')],
   ];
   for (const [name, step] of steps) {
@@ -397,7 +419,7 @@ function passThrough(context: Context, program: 'systemctl' | 'journalctl', args
   return context.system.manager(program, args, { allowed: 'any', inherit: true }).status;
 }
 
-export function main(args: string[], scriptUrl: string): number {
+function main(args: string[], scriptUrl: string): number {
   const warn = (message: string) => process.stderr.write(`bifrost-dashboard: warning: ${message}\n`);
   try {
     const options = parseArgs(args);
