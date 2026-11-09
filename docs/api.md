@@ -22,7 +22,7 @@ All paths are relative to the dashboard's root. The examples use `http://127.0.0
 ```json
 {
   "id": 7,
-  "name": "Immich",
+  "name": "Photos",
   "url": "https://photos.example.com/",
   "icon": "icons/d4dc56669143034f31aa309635d4113d9ad76a02b1739da22c965ed2049be9e6.svg",
   "groupId": 2
@@ -55,7 +55,7 @@ All paths are relative to the dashboard's root. The examples use `http://127.0.0
 {
   "revision": 42,
   "groups": [
-    { "id": 2, "name": "Media & files", "apps": [ { "id": 7, "name": "Immich", "url": "https://photos.example.com/", "icon": null, "groupId": 2 } ] }
+    { "id": 2, "name": "Media & files", "apps": [ { "id": 7, "name": "Photos", "url": "https://photos.example.com/", "icon": null, "groupId": 2 } ] }
   ],
   "ungrouped": [
     { "id": 9, "name": "Miniflux", "url": "https://news.example.com/", "icon": null, "groupId": null }
@@ -122,7 +122,7 @@ Fields: `name` and `url` are required. `groupId` is optional and defaults to `nu
 ```sh
 curl -s -X POST http://127.0.0.1:4310/api/apps \
   -H 'Content-Type: application/json' \
-  -d '{"name": "Immich", "url": "https://photos.example.com", "groupId": 2}'
+  -d '{"name": "Photos", "url": "https://photos.example.com", "groupId": 2}'
 ```
 
 The response is the new App with status `201`. An unknown `groupId` returns `404`.
@@ -152,7 +152,7 @@ Send the image bytes as the request body, with the image's content type. Support
 ```sh
 curl -s -X PUT http://127.0.0.1:4310/api/apps/7/icon \
   -H 'Content-Type: image/svg+xml' \
-  --data-binary @immich.svg
+  --data-binary @photos.svg
 ```
 
 The server names the file `icons/<sha256 hex>.<extension>`, using all 64 hexadecimal digits of the content hash. A replaced icon gets a new path, so browsers never show a stale copy. The response is the updated App. Uploading identical bytes reuses the existing file and keeps the first upload's extension, even when the content type changes.

@@ -127,11 +127,11 @@ test('uploading and removing an icon updates the launcher', async ({ page, api }
 test('a new app can bring its icon along', async ({ page, api }) => {
   await openManage(page);
   await manage(page).getByRole('button', { name: '+ App' }).click();
-  await field(page, 'Name').fill('Grafana');
+  await field(page, 'Name').fill('Metrics');
   await field(page, 'URL').fill('https://metrics.example.test');
-  await manage(page).locator('input[type=file]').setInputFiles(sampleIcon('grafana.svg'));
+  await manage(page).locator('input[type=file]').setInputFiles(sampleIcon('metrics.svg'));
   await manage(page).getByRole('button', { name: 'Save' }).click();
-  await expect(page.locator('.app-link', { hasText: 'Grafana' }).locator('img')).toHaveAttribute('src', /\/icons\/.+\.svg$/);
+  await expect(page.locator('.app-link', { hasText: 'Metrics' }).locator('img')).toHaveAttribute('src', /\/icons\/.+\.svg$/);
   expect((await api.catalog()).ungrouped).toHaveLength(1);
 });
 
@@ -458,30 +458,30 @@ test('Save is disabled while a new app is created, so a double click adds it onc
   await openManage(page);
   const { released: delivered } = await delayFirst(page, 'apps', 'POST', 'response', 800);
   await manage(page).getByRole('button', { name: '+ App' }).click();
-  await field(page, 'Name').fill('Grafana');
+  await field(page, 'Name').fill('Metrics');
   await field(page, 'URL').fill('https://metrics.example.test');
   const save = manage(page).getByRole('button', { name: 'Save' });
   await save.click();
   await expect(save).toBeDisabled();
   await save.click({ force: true });
   await delivered;
-  await expect(rows(page, 'ungrouped')).toHaveText(['Grafana']);
+  await expect(rows(page, 'ungrouped')).toHaveText(['Metrics']);
   await expect(manage(page)).toHaveAttribute('aria-busy', 'false');
-  expect((await api.catalog()).ungrouped.map(app => app.name)).toEqual(['Grafana']);
+  expect((await api.catalog()).ungrouped.map(app => app.name)).toEqual(['Metrics']);
 });
 
 test('when a new app’s icon fails to upload, its edit form opens and saving again does not add it twice', async ({ page, api }) => {
   await openManage(page);
   await page.route('**/api/apps/*/icon', route => route.fulfill({ status: 415, json: { error: 'Unsupported icon content type.' } }));
   await manage(page).getByRole('button', { name: '+ App' }).click();
-  await field(page, 'Name').fill('Grafana');
+  await field(page, 'Name').fill('Metrics');
   await field(page, 'URL').fill('https://metrics.example.test');
-  await manage(page).locator('input[type=file]').setInputFiles(sampleIcon('grafana.svg'));
+  await manage(page).locator('input[type=file]').setInputFiles(sampleIcon('metrics.svg'));
   await manage(page).getByRole('button', { name: 'Save' }).click();
   await expect(manage(page).getByRole('heading', { name: 'Edit app' })).toBeVisible();
   await expect(alert(page)).toHaveText('The app was added, but its icon wasn’t saved. Unsupported icon content type.');
-  await expect(field(page, 'Name')).toHaveValue('Grafana');
+  await expect(field(page, 'Name')).toHaveValue('Metrics');
   await manage(page).getByRole('button', { name: 'Save' }).click();
   await expect(field(page, 'Name')).toHaveCount(0);
-  expect((await api.catalog()).ungrouped.map(app => app.name)).toEqual(['Grafana']);
+  expect((await api.catalog()).ungrouped.map(app => app.name)).toEqual(['Metrics']);
 });
