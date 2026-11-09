@@ -20,7 +20,7 @@ S='${root}/state'
 UNIT='${root}/etc/systemd/system/bifrost-dashboard.service'
 echo "systemctl $*" >> '${root}/calls'
 echo "PROBE=\${PROBE:-unset} PATH=$PATH" > '${root}/env'
-if [ -e "${root}/fail/$1" ]; then echo "$1 failed" >&2; exit 1; fi
+if [ -e "${root}/fail/$1" ]; then cat "${root}/fail/$1" >&2; echo "$1 failed" >&2; exit 1; fi
 if [ ! -e "$UNIT" ]; then
   case "$1" in
     stop) echo "Failed to stop $2: Unit $2 not loaded." >&2; exit 5 ;;
@@ -93,7 +93,7 @@ async function fixture(t: TestContext, { env, releaseAt = ['release'] }: Fixture
       const names = await readdir(join(root, 'state'));
       return { enabled: names.includes('enabled'), active: names.includes('active') };
     },
-    async fail(command: string) { await writeFile(join(root, 'fail', command), ''); },
+    async fail(command: string, message = '') { await writeFile(join(root, 'fail', command), message); },
     async dies() { await writeFile(join(root, 'dies'), ''); },
     async writeEnv(text: string) { await writeFile(join(root, 'etc/bifrost-dashboard/dashboard.env'), text); },
     async unit(): Promise<string | null> { return readFile(unitPath, 'utf8').catch(() => null); },
@@ -267,6 +267,18 @@ test('a release that contains the data directory, or reaches it through a link, 
   await symlink(join(linked.release, 'data'), join(linked.root, 'var/lib/bifrost-dashboard'));
   const result = linked.run('unit');
   assert.equal(result.status, 1, 'a dangling link into the release still overlaps');
+  assert.match(result.stderr, /overlaps the data directory/);
+});
+
+test('a link whose target climbs with .. is followed before the .. applies', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await mkdir(join(f.release, 'nested'));
+  await mkdir(join(f.root, 'var/lib'), { recursive: true });
+  await symlink(join(f.release, 'nested'), join(f.root, 'var/lib/alias'));
+  // Lexically alias/../data is /var/lib/data; through the link it is <release>/data.
+  await symlink('alias/../data', join(f.root, 'var/lib/bifrost-dashboard'));
+  const result = f.run('unit');
+  assert.equal(result.status, 1);
   assert.match(result.stderr, /overlaps the data directory/);
 });
 
@@ -506,6 +518,12 @@ test('a rerun of uninstall still fails on errors other than a unit systemd no lo
   const result = f.run('uninstall');
   assert.equal(result.status, 1);
   assert.match(result.stderr, /stop failed/);
+
+  const other = await fixture(t);
+  await other.fail('disable', 'Failed to connect to bus: socket not found\n');
+  const bus = other.run('uninstall');
+  assert.equal(bus.status, 4, 'stop counted as done, then disable failed for another reason');
+  assert.match(bus.stderr, /Failed to connect to bus/);
 });
 
 test('uninstall refuses an unmanaged unit unless forced', { skip: asRoot }, async t => {

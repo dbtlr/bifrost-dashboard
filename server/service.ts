@@ -72,23 +72,33 @@ function isSafePath(path: string): boolean {
 
 const isInside = (path: string, parent: string): boolean => path === parent || path.startsWith(`${parent}/`);
 
-// Resolves every symbolic link along the path, dangling ones included, so a path that does not exist yet
-// still compares by where it will lead.
-function resolvePath(path: string, depth = 0): string {
-  if (depth > 40) throw new Failure(`Too many symbolic links while resolving ${path}.`);
-  const parts = path.split('/').filter(Boolean);
+// Resolves every symbolic link along the path one component at a time, dangling links included, so a
+// path that does not exist yet still compares by where it will lead. `..` applies to the resolved parent,
+// as the kernel does, never lexically before a link is followed.
+function resolvePath(path: string): string {
+  const pending = path.split('/').filter(Boolean);
   let current = '/';
-  for (const [index, part] of parts.entries()) {
+  let links = 0;
+  while (pending.length > 0) {
+    const part = pending.shift()!;
+    if (part === '.') continue;
+    if (part === '..') {
+      current = dirname(current);
+      continue;
+    }
     const next = join(current, part);
     let info;
     try {
       info = lstatSync(next);
     } catch {
-      return join(next, ...parts.slice(index + 1));
+      return join(next, ...pending); // nothing below a missing component can be a link yet
     }
     if (info.isSymbolicLink()) {
+      if (++links > 40) throw new Failure(`Too many symbolic links while resolving ${path}.`);
       const target = readlinkSync(next);
-      return resolvePath(join(target.startsWith('/') ? '/' : current, target, ...parts.slice(index + 1)), depth + 1);
+      if (target.startsWith('/')) current = '/';
+      pending.unshift(...target.split('/').filter(Boolean));
+      continue;
     }
     current = next;
   }
@@ -401,11 +411,11 @@ function uninstall(context: Context): void {
     throw new Failure(`${context.unitPath} was not written by these commands. Use uninstall --force to remove it.`);
   }
   // Without a unit file, this finishes an earlier partial run: systemd's "not loaded" (stop, status 5)
-  // and "does not exist" (disable) answers count as done. Any other failure is real.
+  // and "Unit file … does not exist" (disable) answers count as done. Any other failure is real.
   const settled = (command: 'stop' | 'disable') => () => {
     if (installed) return void system.systemctl(command, SERVICE);
     const result = system.manager('systemctl', [command, SERVICE], { allowed: 'any' });
-    const gone = result.status === 0 || (command === 'stop' ? result.status === 5 : /does not exist|not found/i.test(result.stderr));
+    const gone = result.status === 0 || (command === 'stop' ? result.status === 5 : /Unit file \S+ does not exist/.test(result.stderr));
     if (!gone) throw new Failure(`systemctl ${command} failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : ` with status ${result.status}.`}`);
   };
   const done: string[] = [];
