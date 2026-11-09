@@ -14,7 +14,8 @@ const appRoot = fileURLToPath(new URL('../', import.meta.url));
 const MARKER = '# Managed by bifrost-dashboard server/service.ts';
 const asRoot = process.geteuid?.() === 0;
 
-// Like systemd, stop and disable answer "not loaded" (5) and "does not exist" (1) once the unit file is gone.
+// Like systemd, stop and disable answer "not loaded" (5) and "does not exist" (1) once the unit file is gone;
+// `new-wording` switches disable to systemd 257's message, which drops "file".
 const fakeSystemctl = (root: string) => `#!/bin/sh
 S='${root}/state'
 UNIT='${root}/etc/systemd/system/bifrost-dashboard.service'
@@ -24,7 +25,7 @@ if [ -e "${root}/fail/$1" ]; then cat "${root}/fail/$1" >&2; echo "$1 failed" >&
 if [ ! -e "$UNIT" ]; then
   case "$1" in
     stop) echo "Failed to stop $2: Unit $2 not loaded." >&2; exit 5 ;;
-    disable) echo "Failed to disable unit: Unit file $2 does not exist." >&2; exit 1 ;;
+    disable) if [ -e "${root}/new-wording" ]; then echo "Failed to disable unit: Unit $2 does not exist" >&2; else echo "Failed to disable unit: Unit file $2 does not exist." >&2; fi; exit 1 ;;
   esac
 fi
 case "$1" in
@@ -296,6 +297,15 @@ test('a missing component followed by .. still leads to the links after it, and 
   assert.match(slash.run('unit').stderr, /overlaps the data directory/);
 });
 
+test('a link loop at the data path fails instead of hanging', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await mkdir(join(f.root, 'var/lib'), { recursive: true });
+  await symlink('bifrost-dashboard', join(f.root, 'var/lib/bifrost-dashboard'));
+  const result = f.run('unit');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Too many symbolic links/);
+});
+
 test('a release beside the data directory with a similar name is accepted', { skip: asRoot }, async t => {
   const f = await fixture(t, { releaseAt: ['root', 'var/lib/bifrost-dashboard-other/r1'] });
   const result = f.run('unit');
@@ -524,6 +534,9 @@ test('uninstall stops and disables the service, removes the unit, and can be run
   assert.deepEqual(await f.state(), { enabled: false, active: false });
   const again = f.run('uninstall');
   assert.equal(again.status, 0, again.stderr);
+  await writeFile(join(f.root, 'new-wording'), '');
+  const newer = f.run('uninstall');
+  assert.equal(newer.status, 0, `systemd 257 wording also counts as done: ${newer.stderr}`);
 });
 
 test('a rerun of uninstall still fails on errors other than a unit systemd no longer knows', { skip: asRoot }, async t => {

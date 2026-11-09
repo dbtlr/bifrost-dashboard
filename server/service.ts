@@ -413,11 +413,11 @@ function uninstall(context: Context): void {
     throw new Failure(`${context.unitPath} was not written by these commands. Use uninstall --force to remove it.`);
   }
   // Without a unit file, this finishes an earlier partial run: systemd's "not loaded" (stop, status 5)
-  // and "Unit file … does not exist" (disable) answers count as done. Any other failure is real.
+  // and "Unit [file] … does not exist" (disable; systemd 257 drops "file") answers count as done.
   const settled = (command: 'stop' | 'disable') => () => {
     if (installed) return void system.systemctl(command, SERVICE);
     const result = system.manager('systemctl', [command, SERVICE], { allowed: 'any' });
-    const gone = result.status === 0 || (command === 'stop' ? result.status === 5 : /Unit file \S+ does not exist/.test(result.stderr));
+    const gone = result.status === 0 || (command === 'stop' ? result.status === 5 : /Unit (file )?\S+ does not exist/.test(result.stderr));
     if (!gone) throw new Failure(`systemctl ${command} failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : ` with status ${result.status}.`}`);
   };
   const done: string[] = [];
