@@ -417,7 +417,7 @@ function uninstall(context: Context): void {
   const settled = (command: 'stop' | 'disable') => () => {
     if (installed) return void system.systemctl(command, SERVICE);
     const result = system.manager('systemctl', [command, SERVICE], { allowed: 'any' });
-    const gone = result.status === 0 || (command === 'stop' ? result.status === 5 : /Unit (file )?\S+ does not exist/.test(result.stderr));
+    const gone = result.status === 0 || (command === 'stop' ? result.status === 5 : /Unit (file )?bifrost-dashboard\.service does not exist/.test(result.stderr));
     if (!gone) throw new Failure(`systemctl ${command} failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : ` with status ${result.status}.`}`);
   };
   const done: string[] = [];

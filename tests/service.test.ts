@@ -290,6 +290,9 @@ test('a missing component followed by .. still leads to the links after it, and 
   await symlink(join(f.release, 'nested'), join(f.root, 'var/lib/alias'));
   await symlink('missing/../alias/../data', join(f.root, 'var/lib/bifrost-dashboard'));
   assert.match(f.run('unit').stderr, /overlaps the data directory/);
+  await rm(join(f.root, 'var/lib/bifrost-dashboard'));
+  await symlink('missing/../alias/data', join(f.root, 'var/lib/bifrost-dashboard'));
+  assert.match(f.run('unit').stderr, /overlaps the data directory/, 'links after the climb are followed too');
 
   const slash = await fixture(t);
   await mkdir(join(slash.root, 'var/lib'), { recursive: true });
@@ -551,6 +554,10 @@ test('a rerun of uninstall still fails on errors other than a unit systemd no lo
   const bus = other.run('uninstall');
   assert.equal(bus.status, 4, 'stop counted as done, then disable failed for another reason');
   assert.match(bus.stderr, /Failed to connect to bus/);
+
+  const elsewhere = await fixture(t);
+  await elsewhere.fail('disable', 'Unit other.service does not exist\n');
+  assert.equal(elsewhere.run('uninstall').status, 4, 'a message about another unit does not count');
 });
 
 test('uninstall refuses an unmanaged unit unless forced', { skip: asRoot }, async t => {
