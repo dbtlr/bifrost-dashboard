@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, request as httpRequest } from 'node:http';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -148,6 +148,18 @@ test('icon uploads reject unsupported types, empty bodies, and bodies over 1 MiB
   assert.equal((await fetch(base + '/api/apps/999/icon', { method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: 'icon' })).status, 404);
   assert.deepEqual(await readdir(join(dataDir, 'icons')), []);
   assert.deepEqual((await (await request('/api/catalog')).json()).ungrouped, [app]);
+});
+
+test('an icon file damaged before it reached the disk is rewritten when the same bytes are uploaded again', async t => {
+  const { request, base, dataDir } = await fixture(t);
+  const app = await (await request('/api/apps', 'POST', { name: 'App', url: 'https://app.test' })).json();
+  const name = 'd4dc56669143034f31aa309635d4113d9ad76a02b1739da22c965ed2049be9e6.svg';
+  await writeFile(join(dataDir, 'icons', name), '<sv');
+  const response = await fetch(`${base}/api/apps/${app.id}/icon`, { method: 'PUT', headers: { 'Content-Type': 'image/svg+xml' }, body: '<svg/>' });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).icon, `icons/${name}`);
+  assert.equal(await readFile(join(dataDir, 'icons', name), 'utf8'), '<svg/>');
+  assert.deepEqual(await readdir(join(dataDir, 'icons')), [name]);
 });
 
 test('icons use content hashes, deduplicate, and are removed only after the last reference', async t => {

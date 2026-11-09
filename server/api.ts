@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isRecord, requireAppUrl, requireName } from '../src/app-rules.ts';
@@ -107,15 +107,26 @@ const iconTypes = new Map([
   ['image/jpeg', 'jpg'], ['image/gif', 'gif'], ['image/x-icon', 'ico'], ['image/vnd.microsoft.icon', 'ico'],
 ]);
 
+const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
+// Icons are named by content hash, so identical bytes share one file. A file already at that name is
+// reused only if it still hashes to its name; otherwise it is rewritten in place. The directory is
+// flushed on every call, so a retry after a failed flush still makes the published name durable.
 function writeIcon(dataDir: string, bytes: Buffer, extension: string): string {
-  const hash = createHash('sha256').update(bytes).digest('hex');
+  const icons = join(dataDir, 'icons');
+  const hash = sha256(bytes);
   // Identical bytes reuse the first upload's extension even if the MIME type changes.
-  const existing = [...new Set(iconTypes.values())].find(type => existsSync(join(dataDir, 'icons', `${hash}.${type}`)));
+  const existing = [...new Set(iconTypes.values())].find(type => existsSync(join(icons, `${hash}.${type}`)));
   const file = `${hash}.${existing ?? extension}`;
-  const target = join(dataDir, 'icons', file);
-  // Reuse trusts any file already at `target`, so its bytes must be on disk before the rename publishes it.
-  if (!existsSync(target)) {
-    const temporary = join(dataDir, 'icons', `.${randomUUID()}.tmp`);
+  const target = join(icons, file);
+  let intact = false;
+  try {
+    intact = sha256(readFileSync(target)) === hash;
+  } catch {
+    // Missing or unreadable: write it.
+  }
+  if (!intact) {
+    const temporary = join(icons, `.${randomUUID()}.tmp`);
     try {
       const fd = openSync(temporary, 'wx');
       try {
@@ -128,12 +139,12 @@ function writeIcon(dataDir: string, bytes: Buffer, extension: string): string {
     } finally {
       rmSync(temporary, { force: true });
     }
-    const directory = openSync(join(dataDir, 'icons'), 'r');
-    try {
-      fsyncSync(directory);
-    } finally {
-      closeSync(directory);
-    }
+  }
+  const directory = openSync(icons, 'r');
+  try {
+    fsyncSync(directory);
+  } finally {
+    closeSync(directory);
   }
   return `icons/${file}`;
 }
