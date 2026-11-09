@@ -11,7 +11,7 @@
     "start": "node server/start.ts",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test tests/catalog.test.ts tests/client-api.test.ts tests/manage-model.test.ts tests/store.test.ts tests/api.test.ts tests/server.test.ts",
+    "test": "node --test tests/catalog.test.ts tests/client-api.test.ts tests/manage-model.test.ts tests/store.test.ts tests/api.test.ts tests/server.test.ts tests/service.test.ts",
     "test:browser": "npm run build && playwright test",
     "check": "npm test && npm run build"
   },

@@ -1,22 +1,22 @@
+# Managed by bifrost-dashboard server/service.ts
+# Rendered from the release's deploy/bifrost-dashboard.service; see docs/service.md there.
 [Unit]
 Description=Bifrost app dashboard
 After=network.target
 
 [Service]
 Type=exec
-Environment=NODE_ENV=production
-# Illustrative template; lifecycle.py renders validated settings and absolute release paths.
-Environment=BIFROST_HOST=127.0.0.1
-Environment=BIFROST_PORT=4310
-Environment=BIFROST_DATA_DIR=/srv/bifrost-dashboard-data
-Environment=BIFROST_BUILD_DIR=@RELEASE@/dist
 WorkingDirectory=@RELEASE@
-ExecStart=@RELEASE@/bin/node @RELEASE@/server/start.ts
+Environment=NODE_ENV=production
+Environment=BIFROST_HOST=@HOST@
+Environment=BIFROST_PORT=@PORT@
+Environment=BIFROST_DATA_DIR=@DATA_DIR@
+ExecStart=@NODE@ @RELEASE@/server/start.ts
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
 DynamicUser=yes
-StateDirectory=bifrost-dashboard
+StateDirectory=@STATE_DIRECTORY@
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
