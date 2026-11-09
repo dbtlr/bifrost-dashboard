@@ -20,7 +20,7 @@ The commands trust the release and the configuration file: root runs the release
 | `logs [--lines N]` | yes | Runs `journalctl -u bifrost-dashboard.service -n N --no-pager`. `N` is 1 to 10000; the default is 50. Root is required because `journalctl` shows other users nothing and still succeeds. |
 | `version` | no | Prints the release's `package.json` version. |
 | `unit` | no | Prints the unit that `install` would write. It reads and validates the configuration but changes nothing. |
-| `uninstall [--force]` | yes | Stops and disables the service, removes the unit if present, and reloads systemd. Running it again after a partial failure completes it. It never removes the data directory or the configuration file. |
+| `uninstall [--force]` | yes | Stops and disables the service, removes the unit if present, and reloads systemd. Running it again after a partial failure completes it: without a unit file, a failure to stop or disable a unit systemd no longer knows counts as done. It never removes the data directory or the configuration file. |
 
 Commands marked "Root" require the effective user to be root. They fail before any change otherwise.
 
@@ -68,7 +68,7 @@ The commands do not check the version of `BIFROST_NODE_BIN`. A Node.js that cann
 
 The unit hides `/home`, `/root`, `/run/user`, `/tmp`, and `/var/tmp` from the service. The release and `BIFROST_NODE_BIN`, with symbolic links resolved, must be outside them. The error names the resolved path.
 
-The release must not overlap the data directory. With `NAME` the last part of `BIFROST_DATA_DIR`, the resolved release must not be inside `/var/lib/NAME` or `/var/lib/private/NAME`, and must not contain either. systemd keeps a dynamic user's data in `/var/lib/private/NAME`, and the data directory may not exist yet, so the check compares against these fixed paths. Otherwise the database would live in a disposable release, or the service could write release code.
+The release must not overlap the data directory. With `STATE` the last part of `BIFROST_DATA_DIR`, such as `bifrost-dashboard`, the resolved release must not be inside `/var/lib/STATE` or `/var/lib/private/STATE`, and must not contain either. systemd keeps a dynamic user's data in `/var/lib/private/STATE`, and the data directory may not exist yet, so the check compares against these fixed paths, with symbolic links resolved in the part of each that exists. Otherwise the database would live in a disposable release, or the service could write release code.
 
 ## The unit
 
@@ -107,9 +107,10 @@ The service creates `bifrost.sqlite` and `icons/` in `BIFROST_DATA_DIR` on first
 Earlier versions kept data in `/srv/bifrost-dashboard-data`, which these commands reject as a data directory. While that directory exists, `install` and `restart` also refuse a data directory that holds neither `bifrost.sqlite` nor `apps.json`, so the service never starts with an empty catalog while the old data waits elsewhere. To move such an installation:
 
 1. Stop the service.
-2. Copy everything in `/srv/bifrost-dashboard-data` into `/var/lib/bifrost-dashboard`: `bifrost.sqlite` if it exists, otherwise `apps.json`, and `icons/`. Copying the database keeps every change made since the import.
+2. Copy everything in `/srv/bifrost-dashboard-data` into `/var/lib/bifrost-dashboard`, including `bifrost.sqlite` if it exists, `apps.json`, and `icons/`. The database, when present, holds every change made since the import.
 3. Remove `BIFROST_DATA_DIR` from the configuration, or set it to `/var/lib/bifrost-dashboard`.
 4. Run `install`. A unit that an earlier tool wrote lacks the managed line, so the first install needs `--force`.
+5. Once the dashboard shows the expected catalog, archive or remove `/srv/bifrost-dashboard-data`. While it exists, `install` and `restart` keep refusing a data directory without a catalog.
 
 ## Testing
 
