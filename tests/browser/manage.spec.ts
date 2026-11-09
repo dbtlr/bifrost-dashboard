@@ -433,6 +433,45 @@ test('an unsaved group choice survives a refresh unless the app’s group change
   await expect(field(page, 'Group')).toHaveValue(everyday);
 });
 
+test('saving after a refresh keeps a URL changed elsewhere when only the name was edited here', async ({ page, api }) => {
+  await api.seed();
+  await openManage(page);
+  const { id } = await api.app('Jellyfin');
+  await editApp(page, 'Jellyfin');
+  await field(page, 'Name').fill('Jelly');
+  await api.call('PATCH', `apps/${id}`, { url: 'https://moved.example.test' });
+  // An icon upload from the open form refreshes the catalog underneath the unsaved name.
+  await manage(page).locator('input[type=file]').setInputFiles(sampleIcon('watch.svg'));
+  await expect(manage(page).getByRole('button', { name: 'Remove icon' })).toBeVisible();
+  await expect(field(page, 'URL')).toHaveValue('https://moved.example.test/');
+  await expect(field(page, 'Name')).toHaveValue('Jelly');
+  await manage(page).getByRole('button', { name: 'Save' }).click();
+  await expect.poll(async () => {
+    const state = await api.catalog();
+    const app = [...state.ungrouped, ...state.groups.flatMap(group => group.apps)].find(entry => entry.id === id);
+    return app && `${app.name} ${app.url}`;
+  }).toBe('Jelly https://moved.example.test/');
+});
+
+test('a failed icon upload for an app created in the background leaves the form the user moved to alone', async ({ page, api }) => {
+  await api.seed();
+  await openManage(page);
+  const { released: created } = await delayFirst(page, 'apps', 'POST', 'response', 800);
+  await page.route('**/api/apps/*/icon', route => route.fulfill({ status: 415, json: { error: 'Unsupported icon content type.' } }));
+  await manage(page).getByRole('button', { name: '+ App' }).click();
+  await field(page, 'Name').fill('Metrics');
+  await field(page, 'URL').fill('https://metrics.example.test');
+  await manage(page).locator('input[type=file]').setInputFiles(sampleIcon('metrics.svg'));
+  await manage(page).getByRole('button', { name: 'Save' }).click();
+  await manage(page).getByRole('button', { name: /^(Cancel|Back to apps and groups)$/ }).filter({ visible: true }).click();
+  await editApp(page, 'Jellyfin');
+  await field(page, 'Name').fill('Jelly');
+  await created;
+  await expect(alert(page)).toHaveText('“Metrics” was added, but its icon wasn’t saved. Unsupported icon content type.');
+  await expect(manage(page).getByRole('heading', { name: 'Edit app' })).toBeVisible();
+  await expect(field(page, 'Name')).toHaveValue('Jelly');
+});
+
 test('a form for an app or group deleted elsewhere closes with a plain message', async ({ page, api }) => {
   await api.seed();
   await openManage(page);

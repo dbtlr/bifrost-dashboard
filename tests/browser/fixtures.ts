@@ -16,7 +16,7 @@ export function sampleIcon(name: string): string {
 }
 
 interface Item { id: number; name: string }
-interface CatalogApp extends Item { icon: string | null; groupId: number | null }
+interface CatalogApp extends Item { url: string; icon: string | null; groupId: number | null }
 export interface CatalogState { revision: number; groups: (Item & { apps: CatalogApp[] })[]; ungrouped: CatalogApp[] }
 
 // Talks to the test's own dashboard server the way an automation tool would.

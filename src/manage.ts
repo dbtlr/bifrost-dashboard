@@ -441,11 +441,14 @@ export function createManager(host: ManagerHost) {
             try {
               await api.uploadIcon(createdId, icon);
             } catch (error) {
-              // The app exists now, so the reload after this failure opens its edit form with the reason.
+              const reason = failureMessage(error, false);
+              // The app exists now. If the user is still on this form, the reload opens the new app's edit
+              // form with the reason; if they moved to another form meanwhile, that form is left alone.
+              if (formKey() !== key) throw new Error(`“${values.name.trim()}” was added, but its icon wasn’t saved. ${reason}`);
               form = { kind: 'app', id: createdId };
               pendingIcon = null;
               draft = draftFor('');
-              throw new Error(`The app was added, but its icon wasn’t saved. ${failureMessage(error, false)}`);
+              throw new Error(`The app was added, but its icon wasn’t saved. ${reason}`);
             }
           }
         }
