@@ -19,6 +19,7 @@ const fakeSystemctl = (root: string) => `#!/bin/sh
 S='${root}/state'
 UNIT='${root}/etc/systemd/system/bifrost-dashboard.service'
 echo "systemctl $*" >> '${root}/calls'
+echo "PROBE=\${PROBE:-unset} PATH=$PATH" > '${root}/env'
 if [ -e "${root}/fail/$1" ]; then echo "$1 failed" >&2; exit 1; fi
 if [ ! -e "$UNIT" ]; then
   case "$1" in
@@ -27,7 +28,7 @@ if [ ! -e "$UNIT" ]; then
   esac
 fi
 case "$1" in
-  is-enabled) if [ -e "$S/enabled" ]; then echo enabled; exit 0; else echo disabled; exit 1; fi ;;
+  is-enabled) if [ -e "$S/enabled" ]; then echo enabled; exit 0; elif [ -e "$S/runtime" ]; then echo enabled-runtime; exit 0; else echo disabled; exit 1; fi ;;
   is-active) if [ -e "$S/active" ]; then echo active; exit 0; else echo inactive; exit 3; fi ;;
   enable) touch "$S/enabled" ;;
   disable) rm -f "$S/enabled" ;;
@@ -40,6 +41,7 @@ exit 0
 
 const fakeJournalctl = (root: string) => `#!/bin/sh
 echo "journalctl $*" >> '${root}/calls'
+if [ -e "${root}/fail/journalctl" ]; then echo "journal unavailable" >&2; exit 1; fi
 echo "journal $*"
 `;
 
@@ -74,14 +76,14 @@ async function fixture(t: TestContext, { env, releaseAt = ['release'] }: Fixture
   return {
     base, root, release, unitPath,
     run(...args: string[]) {
-      const result = spawnSync(process.execPath, [join(release, 'server/service.ts'), '--root', root, ...args], { encoding: 'utf8' });
+      const result = spawnSync(process.execPath, [join(release, 'server/service.ts'), '--root', root, ...args], { encoding: 'utf8', env: { ...process.env, PROBE: 'leaked' } });
       return { status: result.status, stdout: result.stdout, stderr: result.stderr };
     },
     async calls(): Promise<string[]> {
       return (await readFile(join(root, 'calls'), 'utf8')).split('\n').filter(Boolean);
     },
     async resetCalls() { await writeFile(join(root, 'calls'), ''); },
-    async setState(state: { enabled?: boolean; active?: boolean }) {
+    async setState(state: { enabled?: boolean; active?: boolean; runtime?: boolean }) {
       for (const [name, on] of Object.entries(state)) {
         if (on) await writeFile(join(root, 'state', name), '');
         else await rm(join(root, 'state', name), { force: true });
@@ -129,6 +131,11 @@ test('unit applies settings from dashboard.env, with quotes, comments, and a byt
   assert.match(result.stdout, /^Environment=BIFROST_PORT=4400$/m);
   assert.match(result.stdout, /^Environment=BIFROST_DATA_DIR=\/var\/lib\/bifrost-dashboard-test$/m);
   assert.match(result.stdout, /^StateDirectory=bifrost-dashboard-test$/m);
+
+  await f.writeEnv('BIFROST_HOST=::1\n');
+  const ipv6 = f.run('unit');
+  assert.equal(ipv6.status, 0, ipv6.stderr);
+  assert.match(ipv6.stdout, /^Environment=BIFROST_HOST=::1$/m);
 });
 
 test('settings that break their rules fail and name the setting or line', { skip: asRoot }, async t => {
@@ -148,6 +155,11 @@ test('settings that break their rules fail and name the setting or line', { skip
     ['BIFROST_DATA_DIR=/srv/bifrost-dashboard-data', /BIFROST_DATA_DIR/],
     ['BIFROST_NODE_BIN=bin/node', /BIFROST_NODE_BIN/],
     ['BIFROST_NODE_BIN=/nonexistent/node', /BIFROST_NODE_BIN/],
+    ['BIFROST_NODE_BIN=package.json', /BIFROST_NODE_BIN must be an absolute path/],
+    ['BIFROST_NODE_BIN=/usr', /BIFROST_NODE_BIN/],
+    ['BIFROST_DATA_DIR=/var/lib/bifrost-dashboard-a%n', /BIFROST_DATA_DIR/],
+    ['BIFROST_DATA_DIR="/var/lib/bifrost-dashboard-a b"', /BIFROST_DATA_DIR/],
+    ['BIFROST_PORT="4400\'', /BIFROST_PORT/],
     ['BIFROST_DATADIR=/var/lib/bifrost-dashboard', /BIFROST_DATADIR/],
     ['BIFROST_PORT=4400\nBIFROST_PORT=4401', /BIFROST_PORT/],
     ['export BIFROST_PORT=4400', /line 1/],
@@ -215,6 +227,55 @@ test('an incomplete release is refused and the missing file is named', { skip: a
   assert.deepEqual(await f.calls(), []);
 });
 
+test('a release without node_modules is refused', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await rm(join(f.release, 'node_modules'), { recursive: true });
+  const result = f.run('unit');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /node_modules/);
+});
+
+test('a release path that would not stay literal in the unit is refused', { skip: asRoot }, async t => {
+  const f = await fixture(t, { releaseAt: ['a release'] });
+  const result = f.run('unit');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /release path/);
+});
+
+test('a template without the managed line or with an unknown placeholder is refused', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  const template = join(f.release, 'deploy/bifrost-dashboard.service');
+  const original = await readFile(template, 'utf8');
+  await writeFile(template, original.split('\n').slice(1).join('\n'));
+  assert.match(f.run('unit').stderr, /managed line/);
+  await writeFile(template, `${original}Environment=X=@UNKNOWN@\n`);
+  assert.match(f.run('unit').stderr, /@UNKNOWN@/);
+});
+
+test('version fails when package.json has no version', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.release, 'package.json'), '{"type":"module"}\n');
+  assert.equal(f.run('version').status, 1);
+});
+
+test('a release that contains the data directory, or reaches it through a link, is refused', { skip: asRoot }, async t => {
+  const contains = await fixture(t, { releaseAt: ['root', 'var'] });
+  assert.match(contains.run('unit').stderr, /overlaps the data directory/);
+
+  const linked = await fixture(t);
+  await mkdir(join(linked.root, 'var/lib'), { recursive: true });
+  await symlink(join(linked.release, 'data'), join(linked.root, 'var/lib/bifrost-dashboard'));
+  const result = linked.run('unit');
+  assert.equal(result.status, 1, 'a dangling link into the release still overlaps');
+  assert.match(result.stderr, /overlaps the data directory/);
+});
+
+test('a release beside the data directory with a similar name is accepted', { skip: asRoot }, async t => {
+  const f = await fixture(t, { releaseAt: ['root', 'var/lib/bifrost-dashboard-other/r1'] });
+  const result = f.run('unit');
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('a release inside the data directory is refused', { skip: asRoot }, async t => {
   for (const at of [['root', 'var/lib/bifrost-dashboard/r1'], ['root', 'var/lib/private/bifrost-dashboard/r1']]) {
     const f = await fixture(t, { releaseAt: at });
@@ -242,6 +303,7 @@ test('install on a fresh host writes the unit, enables, restarts, and checks the
   assert.equal((await stat(f.unitPath)).mode & 0o777, 0o644);
   assert.deepEqual(await readdir(dirname(f.unitPath)), ['bifrost-dashboard.service'], 'no temporary files remain');
   assert.deepEqual(await f.state(), { enabled: true, active: true });
+  assert.equal((await readFile(join(f.root, 'env'), 'utf8')).trim(), 'PROBE=unset PATH=/usr/sbin:/usr/bin:/sbin:/bin', 'managers get a minimal environment');
 });
 
 test('install sets the unit mode explicitly, whatever the umask', { skip: asRoot }, async t => {
@@ -263,6 +325,21 @@ test('install refuses to replace an unmanaged unit unless forced', { skip: asRoo
   const forced = f.run('install', '--force');
   assert.equal(forced.status, 0, forced.stderr);
   assert.ok((await f.unit())?.startsWith(MARKER));
+});
+
+test('a unit with the managed line anywhere but first is unmanaged', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await writeFile(f.unitPath, `[Service]\n${MARKER}\n`);
+  assert.equal(f.run('install').status, 1);
+  assert.equal(await f.unit(), `[Service]\n${MARKER}\n`);
+});
+
+test('a unit path that is a directory is refused', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await mkdir(f.unitPath);
+  const result = f.run('install', '--force');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /not a regular file/);
 });
 
 test('install refuses a masked or symlinked unit even when forced', { skip: asRoot }, async t => {
@@ -303,6 +380,28 @@ test('a failed first install stops and disables the service before removing its 
   const calls = systemctlCalls(await f.calls());
   const recovery = calls.slice(calls.lastIndexOf('is-active bifrost-dashboard.service') + 1);
   assert.deepEqual(recovery, ['stop bifrost-dashboard.service', 'disable bifrost-dashboard.service', 'daemon-reload']);
+});
+
+test('a failure to flush the unit directory after the rename runs recovery', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  const previous = `${MARKER}\n[Service]\nWorkingDirectory=/srv/previous\n`;
+  await writeFile(f.unitPath, previous);
+  await f.setState({ enabled: true, active: true });
+  // Write and search permission without read: files can be renamed in, but the directory cannot be opened to flush it.
+  await chmod(dirname(f.unitPath), 0o300);
+  const result = f.run('install');
+  await chmod(dirname(f.unitPath), 0o755);
+  assert.equal(result.status, 4, 'the restore cannot be flushed either, so the state is not confirmed');
+  assert.match(result.stderr, /Recovery failed/);
+  assert.equal(await f.unit(), previous, 'the previous unit is back in place');
+});
+
+test('a service enabled only for this boot counts as not enabled and is disabled again', { skip: asRoot }, async t => {
+  const f = await fixture(t);
+  await f.setState({ runtime: true });
+  await f.dies();
+  assert.equal(f.run('install').status, 1);
+  assert.ok(systemctlCalls(await f.calls()).includes('disable bifrost-dashboard.service'));
 });
 
 test('install reports status 4 when recovery also fails', { skip: asRoot }, async t => {
@@ -380,8 +479,12 @@ test('install refuses an empty data directory while data from earlier versions i
   assert.equal(await f.unit(), null);
 
   await mkdir(join(f.root, 'var/lib/bifrost-dashboard'), { recursive: true });
+  await writeFile(join(f.root, 'var/lib/bifrost-dashboard/apps.json'), '{"apps":[]}');
+  assert.equal(f.run('install').status, 0, 'a copied legacy catalog is accepted');
+  await rm(join(f.root, 'var/lib/bifrost-dashboard/apps.json'));
+  assert.match(f.run('restart').stderr, /\/srv\/bifrost-dashboard-data/, 'restart applies the same guard');
   await writeFile(join(f.root, 'var/lib/bifrost-dashboard/bifrost.sqlite'), '');
-  assert.equal(f.run('install').status, 0, 'a migrated database is accepted');
+  assert.equal(f.run('restart').status, 0, 'a migrated database is accepted');
 });
 
 test('uninstall stops and disables the service, removes the unit, and can be run again', { skip: asRoot }, async t => {
@@ -443,6 +546,10 @@ test('logs passes the line count to journalctl and rejects counts out of range',
   assert.equal(f.run('logs').status, 0);
   assert.deepEqual(await f.calls(), ['journalctl -u bifrost-dashboard.service -n 50 --no-pager']);
   for (const lines of ['0', '10001', 'ten']) assert.equal(f.run('logs', '--lines', lines).status, 2, lines);
+  await f.fail('journalctl');
+  const failed = f.run('logs');
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /journalctl failed/);
 });
 
 test('version prints the release version', { skip: asRoot }, async t => {
@@ -454,7 +561,7 @@ test('version prints the release version', { skip: asRoot }, async t => {
 
 test('usage errors exit with status 2', { skip: asRoot }, async t => {
   const f = await fixture(t);
-  for (const args of [[], ['deploy'], ['status', '--force'], ['install', 'extra'], ['logs', '--lines']]) {
+  for (const args of [[], ['deploy'], ['status', '--force'], ['status', '--lines', '5'], ['install', 'extra'], ['logs', '--lines']]) {
     const result = f.run(...args);
     assert.equal(result.status, 2, args.join(' '));
     assert.match(result.stderr, /^bifrost-dashboard: /, args.join(' '));

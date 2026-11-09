@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import type { StdioOptions } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, constants, existsSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, constants, existsSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -72,15 +72,27 @@ function isSafePath(path: string): boolean {
 
 const isInside = (path: string, parent: string): boolean => path === parent || path.startsWith(`${parent}/`);
 
-// Resolves symbolic links in the part of the path that exists, so a path that does not exist yet still compares.
-function resolveExisting(path: string): string {
-  const missing: string[] = [];
-  let current = path;
-  while (!existsSync(current)) {
-    missing.unshift(current.slice(current.lastIndexOf('/') + 1));
-    current = dirname(current);
+// Resolves every symbolic link along the path, dangling ones included, so a path that does not exist yet
+// still compares by where it will lead.
+function resolvePath(path: string, depth = 0): string {
+  if (depth > 40) throw new Failure(`Too many symbolic links while resolving ${path}.`);
+  const parts = path.split('/').filter(Boolean);
+  let current = '/';
+  for (const [index, part] of parts.entries()) {
+    const next = join(current, part);
+    let info;
+    try {
+      info = lstatSync(next);
+    } catch {
+      return join(next, ...parts.slice(index + 1));
+    }
+    if (info.isSymbolicLink()) {
+      const target = readlinkSync(next);
+      return resolvePath(join(target.startsWith('/') ? '/' : current, target, ...parts.slice(index + 1)), depth + 1);
+    }
+    current = next;
   }
-  return join(realpathSync(current), ...missing);
+  return current;
 }
 
 // --- Configuration -------------------------------------------------------------------------------
@@ -170,7 +182,7 @@ class System {
     const stdio: StdioOptions = inherit ? ['ignore', 'inherit', 'inherit'] : 'pipe';
     const result = spawnSync(this.path(`/usr/bin/${program}`), args, {
       env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C.UTF-8' },
-      encoding: 'utf8', stdio, timeout: MANAGER_TIMEOUT_MS,
+      encoding: 'utf8', stdio, timeout: MANAGER_TIMEOUT_MS, killSignal: 'SIGKILL',
     });
     const name = `${program} ${args[0]}`;
     if (result.error) {
@@ -297,7 +309,7 @@ function checkRelease(context: Context, config: Config): void {
     }
   }
   for (const fixed of [`/var/lib/${config.stateName}`, `/var/lib/private/${config.stateName}`]) {
-    const data = resolveExisting(system.path(fixed));
+    const data = resolvePath(system.path(fixed));
     if (isInside(release, data) || isInside(data, release)) throw new Failure(`The release ${release} overlaps the data directory ${fixed}.`);
   }
 }
