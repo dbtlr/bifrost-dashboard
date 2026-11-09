@@ -45,7 +45,7 @@ npm start
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `BIFROST_HOST` | `127.0.0.1` | Listening interface. Use an appropriate reachable interface if the proxy runs elsewhere or in a container. |
+| `BIFROST_HOST` | `127.0.0.1` | Listening interface. The systemd service accepts only loopback addresses. |
 | `BIFROST_PORT` | `4310` | Fixed HTTP port, configurable from 1 to 65535. Use an unprivileged port for the systemd service. |
 | `BIFROST_BUILD_DIR` | `dist/` | Built frontend files. |
 | `BIFROST_DATA_DIR` | `data/` | Writable SQLite database and uploaded `icons/`. |
@@ -58,11 +58,11 @@ The server routes `/api/` to the JSON API and `/icons/` to the data directory. O
 
 ## systemd service
 
-`deploy/bifrost-dashboard.service` runs the built server under a temporary unprivileged systemd identity and restarts it on failure. It reads configuration from `/etc/bifrost-dashboard/dashboard.env`. It does not build the frontend or configure the existing reverse proxy.
+`server/service.ts` installs and controls the dashboard as a systemd service. The service runs the built server under a temporary unprivileged systemd identity, restarts it on failure, and keeps its data in `/var/lib/bifrost-dashboard`. The commands do not build the frontend or configure the reverse proxy. [Service commands](docs/service.md) is the full reference.
 
-First place the application at the chosen deployment location and run `npm ci` and `npm run build` there. The service needs `server/`, `src/app-rules.ts`, `package.json`, runtime `node_modules/`, and the configured build directory. Node.js 24 must be installed at a service-accessible path outside `/home`; set `BIFROST_NODE_BIN` to that executable. Development dependencies are only needed for builds and checks.
+Place the release outside `/home` and `/tmp`, for example at `/srv/bifrost-dashboard`, and keep it writable only by root. Run `npm ci` and `npm run build` there; `npm prune --omit=dev` can then drop the development dependencies. The service runs the Node.js 24 binary that runs the command, unless `BIFROST_NODE_BIN` names another one.
 
-For the first installation, run these commands from the application directory:
+Configuration is optional. To change the port or data directory, create the file before installing:
 
 ```sh
 sudo install -d -m 0755 /etc/bifrost-dashboard
@@ -70,36 +70,23 @@ sudo install -m 0644 deploy/dashboard.env.example /etc/bifrost-dashboard/dashboa
 sudoedit /etc/bifrost-dashboard/dashboard.env
 ```
 
-Set `BIFROST_APP_DIR` and `BIFROST_BUILD_DIR` to the chosen absolute locations. The example uses `/srv/bifrost-dashboard` for the application. Keep `BIFROST_DATA_DIR=/var/lib/bifrost-dashboard` to match the unit's `StateDirectory=bifrost-dashboard`. Systemd creates writable persistent storage for the dynamic service identity while the rest of the filesystem remains protected. Application and build files must be readable, and their parent directories traversable, by that identity. Paths under `/home` are hidden by the unit's sandbox.
-
-Check the chosen port with `ss -ltn` before enabling the service. Then install and start the dedicated unit:
+Check the chosen port with `ss -ltn`. Then install and start the service from the release directory:
 
 ```sh
-sudo install -m 0644 deploy/bifrost-dashboard.service /etc/systemd/system/bifrost-dashboard.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now bifrost-dashboard.service
-systemctl status bifrost-dashboard.service
-journalctl -u bifrost-dashboard.service -n 50 --no-pager
+sudo node server/service.ts install
+node server/service.ts status
+sudo node server/service.ts logs --lines 50
 ```
 
-To migrate an existing deployment:
+`install` writes the unit, enables and restarts the service, and checks that systemd reports it active. If a step fails, it puts the previous unit and service state back. The service listens on loopback only, because the API has no authentication; point the reverse proxy at it on the same host.
 
-1. Stop the service with `sudo systemctl stop bifrost-dashboard.service`.
-2. Copy its old `apps.json` and `icons/` into `/var/lib/bifrost-dashboard`. Preserve an existing `bifrost.sqlite` to keep its state instead.
-3. Update `dashboard.env` to use that data directory.
-4. Install the updated unit and reload systemd before starting:
+- **New release:** build it in its own directory and run its `server/service.ts install`. Running an earlier release's `install` rolls back.
+- **Configuration change:** run `sudo node server/service.ts restart` from the installed release.
+- **Removal:** run `sudo node server/service.ts uninstall`. It keeps the data directory and the configuration file.
 
-```sh
-sudo install -m 0644 deploy/bifrost-dashboard.service /etc/systemd/system/bifrost-dashboard.service
-sudo systemctl daemon-reload
-sudo systemctl start bifrost-dashboard.service
-```
+A fresh database imports a legacy `apps.json` from the data directory once, accepting a leading UTF-8 BOM. An invalid `apps.json` stops startup until it is fixed or removed. The error names the file and invalid app number. No apps are imported on failure, so the corrected file can be imported on the next start.
 
-The updated unit's `StateDirectory=bifrost-dashboard` makes persistent storage writable under `ProtectSystem=strict`. The old unit lacks that setting.
-
-A fresh database imports the legacy catalog once, accepting a leading UTF-8 BOM. An invalid `apps.json` stops startup until it is fixed or removed. The error names the file and invalid app number. No apps are imported on failure, so the corrected file can be imported on the next start.
-
-For later frontend releases, build the application and restart with `sudo systemctl restart bifrost-dashboard.service`. Preserve the environment file and the persistent data directory. Port or path changes in the environment file also require a restart. API updates do not. Stop and disable the service with `sudo systemctl disable --now bifrost-dashboard.service`.
+Installations from earlier versions kept data in `/srv/bifrost-dashboard-data`. [Service commands](docs/service.md#data) describes how to move it; `install` refuses to start an empty catalog while that directory exists.
 
 ## Checks
 
@@ -111,6 +98,16 @@ npm run test:browser
 
 Linux browser checks also need Chromium's system libraries; on a development or CI machine that permits package installation, `npx playwright install --with-deps chromium` installs them. `npm run test:browser` builds the frontend first. Each browser test starts its own dashboard server on a random port with a fresh temporary database, so tests are isolated and run in parallel. They cover the grouped launcher, search, load failures, and the Manage panel (adding, editing, icons, dragging, keyboard reordering, deletion, the phone sheet, conflict recovery, slow and concurrent changes, and focus after changes) in desktop and phone projects.
 
-`npm run check` runs the unit tests, TypeScript checks, and Vite build. Unit tests cover one-time import, schema upgrades, catalog revisions, ordering, atomic layouts, JSON validation, the API client, search, and the Manage panel's move and edit rules, icon uploads and cleanup, file routing, cache headers, path protections, and occupied ports. Validate unit syntax with `systemd-analyze verify deploy/bifrost-dashboard.service`.
+`npm run check` runs the unit tests, TypeScript checks, and Vite build. Unit tests cover one-time import, schema upgrades, catalog revisions, ordering, atomic layouts, JSON validation, the API client, search, and the Manage panel's move and edit rules, icon uploads and cleanup, file routing, cache headers, path protections, and occupied ports. Service tests run `server/service.ts` against a temporary system root with stand-in `systemctl` and `journalctl`. They cover unit rendering, configuration rules, recovery after failed installs, and every command; they need a non-root user. To check a rendered unit's syntax, save the output of `server/service.ts unit` as `bifrost-dashboard.service` and run `systemd-analyze verify` on it.
 
 The original static design studies remain in `designs/` and are not part of the production build.
+
+## Privacy boundary
+
+The checked-in `sample/` catalog and icons are illustrative examples. Keep real service catalogs, icons, and deployment configuration out of the repository; they belong in the data directory and `/etc/bifrost-dashboard/`. The dashboard shows and edits the catalog it stores. It does not discover services.
+
+## License and artwork
+
+The application is licensed under the [MIT License](LICENSE), copyright 2026 Drew Butler. Package metadata retains `private: true`; the package is not published to npm.
+
+The 12 demo SVGs and corresponding inline design-study marks are newly authored generic geometric examples. They replace artwork whose provenance was unverified. No provenance claim is made for the replaced artwork. The application brand remains unchanged and contains no embedded demo marks. Third-party dependencies retain their own licenses and copyright notices; the application license does not replace those terms.
